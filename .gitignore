@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+env/
+
+# Node / web dev
+node_modules/
+.npm/
+.yarn/
+package-lock.json
+yarn.lock
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Outputs from running the tool — never check in user data
+output/
+out/
+charts/
+*.csv
+*.xlsx
+*.png
+*.svg
+*.tsv
+
+# Binary session data — strict: no Fluke binaries ever
+*.bin
+*.fel
+ES.[0-9][0-9][0-9]/
+*-config.json
+
+# But DO keep the test fixture and any vendored binaries we ship intentionally
+!python/tests/fixtures/*.bin
+!web/vendor/*.png
+!web/vendor/*.svg
+
+# Logs
+*.log

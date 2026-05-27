@@ -1,0 +1,935 @@
+{
+  "spec_version": 1,
+  "description": "Fluke 3540 FC trend.bin binary record layout and field map. Single source of truth for both Python and JS parsers.",
+  "record_magic": [
+    70,
+    0,
+    232,
+    2
+  ],
+  "record_size": 744,
+  "header_bytes": 24,
+  "data_floats": 180,
+  "filetime_epoch_iso": "1601-01-01T00:00:00Z",
+  "filetime_units_per_second": 10000000,
+  "header_layout": [
+    {
+      "offset": 0,
+      "size": 4,
+      "type": "bytes",
+      "name": "magic"
+    },
+    {
+      "offset": 4,
+      "size": 8,
+      "type": "filetime_le_uint64",
+      "name": "start_filetime"
+    },
+    {
+      "offset": 12,
+      "size": 8,
+      "type": "filetime_le_uint64",
+      "name": "end_filetime"
+    },
+    {
+      "offset": 20,
+      "size": 4,
+      "type": "uint32_le",
+      "name": "count_or_reserved"
+    }
+  ],
+  "data_layout": {
+    "start_offset": 24,
+    "element_type": "float32_le",
+    "element_count": 180,
+    "stride_bytes": 4
+  },
+  "reverse_cts_prefixes": [
+    "P_",
+    "P1_",
+    "Q_",
+    "Q1_",
+    "PF_",
+    "DPF_",
+    "Wh_",
+    "VARh_"
+  ],
+  "confidence_levels": {
+    "H": "Verified by a physical relationship (e.g. S^2 = P^2 + Q^2, PF = P/S, Wh = P/3600).",
+    "M": "Strong inferential \u2014 pattern + correlation strongly suggest the labelled meaning.",
+    "L": "Weak inference \u2014 likely interpretation but not verified.",
+    "?": "Unknown \u2014 payload is present but role is not yet identified."
+  },
+  "fields": [
+    {
+      "index": 0,
+      "name": "V_LN_a_min_V",
+      "confidence": "H"
+    },
+    {
+      "index": 1,
+      "name": "V_LN_a_max_V",
+      "confidence": "H"
+    },
+    {
+      "index": 2,
+      "name": "V_LN_a_avg_V",
+      "confidence": "H"
+    },
+    {
+      "index": 3,
+      "name": "V_LN_b_min_V",
+      "confidence": "H"
+    },
+    {
+      "index": 4,
+      "name": "V_LN_b_max_V",
+      "confidence": "H"
+    },
+    {
+      "index": 5,
+      "name": "V_LN_b_avg_V",
+      "confidence": "H"
+    },
+    {
+      "index": 6,
+      "name": "V_LN_c_min_V",
+      "confidence": "H"
+    },
+    {
+      "index": 7,
+      "name": "V_LN_c_max_V",
+      "confidence": "H"
+    },
+    {
+      "index": 8,
+      "name": "V_LN_c_avg_V",
+      "confidence": "H"
+    },
+    {
+      "index": 9,
+      "name": "V_LL_ab_min_V",
+      "confidence": "H"
+    },
+    {
+      "index": 10,
+      "name": "V_LL_ab_max_V",
+      "confidence": "H"
+    },
+    {
+      "index": 11,
+      "name": "V_LL_ab_avg_V",
+      "confidence": "H"
+    },
+    {
+      "index": 12,
+      "name": "V_LL_bc_min_V",
+      "confidence": "H"
+    },
+    {
+      "index": 13,
+      "name": "V_LL_bc_max_V",
+      "confidence": "H"
+    },
+    {
+      "index": 14,
+      "name": "V_LL_bc_avg_V",
+      "confidence": "H"
+    },
+    {
+      "index": 15,
+      "name": "V_LL_ca_min_V",
+      "confidence": "H"
+    },
+    {
+      "index": 16,
+      "name": "V_LL_ca_max_V",
+      "confidence": "H"
+    },
+    {
+      "index": 17,
+      "name": "V_LL_ca_avg_V",
+      "confidence": "H"
+    },
+    {
+      "index": 18,
+      "name": "I_a_min_A",
+      "confidence": "H"
+    },
+    {
+      "index": 19,
+      "name": "I_a_max_A",
+      "confidence": "H"
+    },
+    {
+      "index": 20,
+      "name": "I_a_avg_A",
+      "confidence": "H"
+    },
+    {
+      "index": 21,
+      "name": "I_b_min_A",
+      "confidence": "H"
+    },
+    {
+      "index": 22,
+      "name": "I_b_max_A",
+      "confidence": "H"
+    },
+    {
+      "index": 23,
+      "name": "I_b_avg_A",
+      "confidence": "H"
+    },
+    {
+      "index": 24,
+      "name": "I_c_min_A",
+      "confidence": "H"
+    },
+    {
+      "index": 25,
+      "name": "I_c_max_A",
+      "confidence": "H"
+    },
+    {
+      "index": 26,
+      "name": "I_c_avg_A",
+      "confidence": "H"
+    },
+    {
+      "index": 27,
+      "name": "V_THD_pct_a_min",
+      "confidence": "M"
+    },
+    {
+      "index": 28,
+      "name": "V_THD_pct_a_max",
+      "confidence": "M"
+    },
+    {
+      "index": 29,
+      "name": "V_THD_pct_a_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 30,
+      "name": "V_THD_pct_b_min",
+      "confidence": "M"
+    },
+    {
+      "index": 31,
+      "name": "V_THD_pct_b_max",
+      "confidence": "M"
+    },
+    {
+      "index": 32,
+      "name": "V_THD_pct_b_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 33,
+      "name": "V_THD_pct_c_min",
+      "confidence": "M"
+    },
+    {
+      "index": 34,
+      "name": "V_THD_pct_c_max",
+      "confidence": "M"
+    },
+    {
+      "index": 35,
+      "name": "V_THD_pct_c_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 36,
+      "name": "I_THD_pct_a_min",
+      "confidence": "M"
+    },
+    {
+      "index": 37,
+      "name": "I_THD_pct_a_max",
+      "confidence": "M"
+    },
+    {
+      "index": 38,
+      "name": "I_THD_pct_a_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 39,
+      "name": "I_THD_pct_b_min",
+      "confidence": "M"
+    },
+    {
+      "index": 40,
+      "name": "I_THD_pct_b_max",
+      "confidence": "M"
+    },
+    {
+      "index": 41,
+      "name": "I_THD_pct_b_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 42,
+      "name": "I_THD_pct_c_min",
+      "confidence": "M"
+    },
+    {
+      "index": 43,
+      "name": "I_THD_pct_c_max",
+      "confidence": "M"
+    },
+    {
+      "index": 44,
+      "name": "I_THD_pct_c_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 45,
+      "name": "freq_min_Hz",
+      "confidence": "H"
+    },
+    {
+      "index": 46,
+      "name": "freq_max_Hz",
+      "confidence": "H"
+    },
+    {
+      "index": 47,
+      "name": "freq_avg_Hz",
+      "confidence": "H"
+    },
+    {
+      "index": 48,
+      "name": "P_a_min_W",
+      "confidence": "H"
+    },
+    {
+      "index": 49,
+      "name": "P_a_max_W",
+      "confidence": "H"
+    },
+    {
+      "index": 50,
+      "name": "P_a_avg_W",
+      "confidence": "H"
+    },
+    {
+      "index": 51,
+      "name": "P_b_min_W",
+      "confidence": "H"
+    },
+    {
+      "index": 52,
+      "name": "P_b_max_W",
+      "confidence": "H"
+    },
+    {
+      "index": 53,
+      "name": "P_b_avg_W",
+      "confidence": "H"
+    },
+    {
+      "index": 54,
+      "name": "P_c_min_W",
+      "confidence": "H"
+    },
+    {
+      "index": 55,
+      "name": "P_c_max_W",
+      "confidence": "H"
+    },
+    {
+      "index": 56,
+      "name": "P_c_avg_W",
+      "confidence": "H"
+    },
+    {
+      "index": 57,
+      "name": "P_total_min_W",
+      "confidence": "H"
+    },
+    {
+      "index": 58,
+      "name": "P_total_max_W",
+      "confidence": "H"
+    },
+    {
+      "index": 59,
+      "name": "P_total_avg_W",
+      "confidence": "H"
+    },
+    {
+      "index": 60,
+      "name": "S_a_min_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 61,
+      "name": "S_a_max_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 62,
+      "name": "S_a_avg_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 63,
+      "name": "S_b_min_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 64,
+      "name": "S_b_max_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 65,
+      "name": "S_b_avg_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 66,
+      "name": "S_c_min_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 67,
+      "name": "S_c_max_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 68,
+      "name": "S_c_avg_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 69,
+      "name": "S_total_min_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 70,
+      "name": "S_total_max_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 71,
+      "name": "S_total_avg_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 72,
+      "name": "Q_a_min_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 73,
+      "name": "Q_a_max_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 74,
+      "name": "Q_a_avg_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 75,
+      "name": "Q_b_min_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 76,
+      "name": "Q_b_max_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 77,
+      "name": "Q_b_avg_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 78,
+      "name": "Q_c_min_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 79,
+      "name": "Q_c_max_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 80,
+      "name": "Q_c_avg_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 81,
+      "name": "Q_total_min_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 82,
+      "name": "Q_total_max_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 83,
+      "name": "Q_total_avg_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 84,
+      "name": "P1_a_min_W",
+      "confidence": "H"
+    },
+    {
+      "index": 85,
+      "name": "P1_a_max_W",
+      "confidence": "H"
+    },
+    {
+      "index": 86,
+      "name": "P1_a_avg_W",
+      "confidence": "H"
+    },
+    {
+      "index": 87,
+      "name": "P1_b_min_W",
+      "confidence": "H"
+    },
+    {
+      "index": 88,
+      "name": "P1_b_max_W",
+      "confidence": "H"
+    },
+    {
+      "index": 89,
+      "name": "P1_b_avg_W",
+      "confidence": "H"
+    },
+    {
+      "index": 90,
+      "name": "P1_c_min_W",
+      "confidence": "H"
+    },
+    {
+      "index": 91,
+      "name": "P1_c_max_W",
+      "confidence": "H"
+    },
+    {
+      "index": 92,
+      "name": "P1_c_avg_W",
+      "confidence": "H"
+    },
+    {
+      "index": 93,
+      "name": "P1_total_min_W",
+      "confidence": "H"
+    },
+    {
+      "index": 94,
+      "name": "P1_total_max_W",
+      "confidence": "H"
+    },
+    {
+      "index": 95,
+      "name": "P1_total_avg_W",
+      "confidence": "H"
+    },
+    {
+      "index": 96,
+      "name": "S1_a_min_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 97,
+      "name": "S1_a_max_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 98,
+      "name": "S1_a_avg_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 99,
+      "name": "S1_b_min_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 100,
+      "name": "S1_b_max_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 101,
+      "name": "S1_b_avg_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 102,
+      "name": "S1_c_min_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 103,
+      "name": "S1_c_max_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 104,
+      "name": "S1_c_avg_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 105,
+      "name": "S1_total_min_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 106,
+      "name": "S1_total_max_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 107,
+      "name": "S1_total_avg_VA",
+      "confidence": "H"
+    },
+    {
+      "index": 108,
+      "name": "Q1_a_min_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 109,
+      "name": "Q1_a_max_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 110,
+      "name": "Q1_a_avg_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 111,
+      "name": "Q1_b_min_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 112,
+      "name": "Q1_b_max_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 113,
+      "name": "Q1_b_avg_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 114,
+      "name": "Q1_c_min_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 115,
+      "name": "Q1_c_max_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 116,
+      "name": "Q1_c_avg_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 117,
+      "name": "Q1_total_min_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 118,
+      "name": "Q1_total_max_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 119,
+      "name": "Q1_total_avg_VAR",
+      "confidence": "H"
+    },
+    {
+      "index": 120,
+      "name": "PF_a_min",
+      "confidence": "H"
+    },
+    {
+      "index": 121,
+      "name": "PF_a_max",
+      "confidence": "H"
+    },
+    {
+      "index": 122,
+      "name": "PF_a_avg",
+      "confidence": "H"
+    },
+    {
+      "index": 123,
+      "name": "PF_b_min",
+      "confidence": "H"
+    },
+    {
+      "index": 124,
+      "name": "PF_b_max",
+      "confidence": "H"
+    },
+    {
+      "index": 125,
+      "name": "PF_b_avg",
+      "confidence": "H"
+    },
+    {
+      "index": 126,
+      "name": "PF_c_min",
+      "confidence": "H"
+    },
+    {
+      "index": 127,
+      "name": "PF_c_max",
+      "confidence": "H"
+    },
+    {
+      "index": 128,
+      "name": "PF_c_avg",
+      "confidence": "H"
+    },
+    {
+      "index": 129,
+      "name": "PF_total_min",
+      "confidence": "H"
+    },
+    {
+      "index": 130,
+      "name": "PF_total_max",
+      "confidence": "H"
+    },
+    {
+      "index": 131,
+      "name": "PF_total_avg",
+      "confidence": "H"
+    },
+    {
+      "index": 132,
+      "name": "DPF_a_min",
+      "confidence": "M"
+    },
+    {
+      "index": 133,
+      "name": "DPF_a_max",
+      "confidence": "M"
+    },
+    {
+      "index": 134,
+      "name": "DPF_a_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 135,
+      "name": "DPF_b_min",
+      "confidence": "M"
+    },
+    {
+      "index": 136,
+      "name": "DPF_b_max",
+      "confidence": "M"
+    },
+    {
+      "index": 137,
+      "name": "DPF_b_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 138,
+      "name": "DPF_c_min",
+      "confidence": "M"
+    },
+    {
+      "index": 139,
+      "name": "DPF_c_max",
+      "confidence": "M"
+    },
+    {
+      "index": 140,
+      "name": "DPF_c_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 141,
+      "name": "DPF_total_min",
+      "confidence": "M"
+    },
+    {
+      "index": 142,
+      "name": "DPF_total_max",
+      "confidence": "M"
+    },
+    {
+      "index": 143,
+      "name": "DPF_total_avg",
+      "confidence": "M"
+    },
+    {
+      "index": 144,
+      "name": "Wh_a",
+      "confidence": "H"
+    },
+    {
+      "index": 145,
+      "name": "Wh_b",
+      "confidence": "H"
+    },
+    {
+      "index": 146,
+      "name": "Wh_c",
+      "confidence": "H"
+    },
+    {
+      "index": 147,
+      "name": "Wh_total",
+      "confidence": "H"
+    },
+    {
+      "index": 148,
+      "name": "VAh_a",
+      "confidence": "H"
+    },
+    {
+      "index": 149,
+      "name": "VAh_b",
+      "confidence": "H"
+    },
+    {
+      "index": 150,
+      "name": "VAh_c",
+      "confidence": "H"
+    },
+    {
+      "index": 151,
+      "name": "VAh_total",
+      "confidence": "H"
+    },
+    {
+      "index": 152,
+      "name": "VARh_a",
+      "confidence": "H"
+    },
+    {
+      "index": 153,
+      "name": "VARh_b",
+      "confidence": "H"
+    },
+    {
+      "index": 154,
+      "name": "VARh_c",
+      "confidence": "H"
+    },
+    {
+      "index": 155,
+      "name": "VARh_total",
+      "confidence": "H"
+    },
+    {
+      "index": 156,
+      "name": "loss_or_demand_156",
+      "confidence": "L"
+    },
+    {
+      "index": 157,
+      "name": "energy_reverse_total_157",
+      "confidence": "L"
+    },
+    {
+      "index": 158,
+      "name": "reserved_158",
+      "confidence": "L"
+    },
+    {
+      "index": 159,
+      "name": "reserved_159",
+      "confidence": "L"
+    },
+    {
+      "index": 160,
+      "name": "reserved_160",
+      "confidence": "L"
+    },
+    {
+      "index": 161,
+      "name": "reserved_161",
+      "confidence": "L"
+    },
+    {
+      "index": 162,
+      "name": "reserved_162",
+      "confidence": "L"
+    },
+    {
+      "index": 163,
+      "name": "reserved_163",
+      "confidence": "L"
+    },
+    {
+      "index": 170,
+      "name": "V_LN_rolling_all_V",
+      "confidence": "M"
+    },
+    {
+      "index": 171,
+      "name": "I_rolling_all_A",
+      "confidence": "M"
+    },
+    {
+      "index": 172,
+      "name": "V_LN_a_rolling_V",
+      "confidence": "M"
+    },
+    {
+      "index": 173,
+      "name": "V_LN_b_rolling_V",
+      "confidence": "M"
+    },
+    {
+      "index": 174,
+      "name": "V_LN_c_rolling_V",
+      "confidence": "M"
+    },
+    {
+      "index": 175,
+      "name": "I_a_rolling_A",
+      "confidence": "M"
+    },
+    {
+      "index": 176,
+      "name": "I_b_rolling_A",
+      "confidence": "M"
+    },
+    {
+      "index": 177,
+      "name": "I_c_rolling_A",
+      "confidence": "M"
+    },
+    {
+      "index": 178,
+      "name": "V_LN_rolling_178_V",
+      "confidence": "L"
+    },
+    {
+      "index": 179,
+      "name": "I_rolling_179_A",
+      "confidence": "L"
+    }
+  ]
+}
