@@ -23,8 +23,9 @@ from .parser import (
     open_session,
 )
 from .plots import (
-    GnuplotNotFound, render_event_zoom, render_full_session,
-    render_snapshot_zoom, write_html_report, write_xlsx,
+    GnuplotNotFound, WeasyPrintNotInstalled,
+    render_event_zoom, render_full_session, render_snapshot_zoom,
+    write_html_report, write_pdf_report, write_xlsx,
 )
 from .plots.full_session import QUANTITY_SPECS as FULL_QUANTITIES
 from .snapshots import Snapshot, pick_snapshots
@@ -132,6 +133,9 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--no-xlsx", action="store_true", help="Skip XLSX report")
     ap.add_argument("--no-html", action="store_true",
                     help="Skip the self-contained HTML report (default writes report.html)")
+    ap.add_argument("--pdf", action="store_true",
+                    help="Also render report.pdf via weasyprint (install with "
+                         "`pip install fluke-3540-analyzer[pdf]`)")
     ap.add_argument("--no-overview", action="store_true",
                     help="Skip the overview multiplot")
     ap.add_argument("--format", choices=("png", "svg"), default="png",
@@ -309,8 +313,8 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
         print(f"[render] xlsx workbook → {xlsx_path}")
         write_xlsx(min_csv, xlsx_path, config=config, csv_per_second_path=full_csv)
 
+    html_path = outdir / "report.html"
     if not args.no_html:
-        html_path = outdir / "report.html"
         print(f"[render] html report → {html_path}")
         # Reload insights from disk so plot-only flows still get them.
         insights_path = outdir / "insights.json"
@@ -331,6 +335,18 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
             events=events, snapshots=snaps,
             findings=loaded_findings,
         )
+
+    if args.pdf:
+        pdf_path = outdir / "report.pdf"
+        if not html_path.is_file():
+            print(f"ERROR: --pdf requires the HTML report (don't combine with --no-html)",
+                  file=sys.stderr)
+            return
+        print(f"[render] pdf report → {pdf_path}")
+        try:
+            write_pdf_report(html_path, pdf_path)
+        except WeasyPrintNotInstalled as e:
+            print(f"ERROR: {e}", file=sys.stderr)
 
 
 def _load_existing(outdir: Path) -> tuple[Path, Path, list[Event], list[Snapshot], dict]:
