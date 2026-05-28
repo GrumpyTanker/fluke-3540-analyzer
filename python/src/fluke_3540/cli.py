@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .events import Event, detect_events
+from .insights import Finding, analyze as analyze_insights, to_jsonable as finding_to_jsonable
 from .parser import (
     _parse_reverse_cts_arg, export_csv, find_session_files, iter_records,
     open_session,
@@ -171,8 +172,10 @@ def _parse_session(args: argparse.Namespace, outdir: Path,
 
 
 def _detect_and_save(args: argparse.Namespace, outdir: Path,
-                     trend_path: Path) -> tuple[list[Event], list[Snapshot]]:
-    """Phase 1B: run event + snapshot detection, write JSON."""
+                     trend_path: Path,
+                     config: dict | None = None,
+                     ) -> tuple[list[Event], list[Snapshot], list[Finding]]:
+    """Phase 1B: run event + snapshot + insights detection, write JSON."""
     print("[detect] running event scan…")
     recs = list(iter_records(trend_path))
     if args.from_time or args.to_time:
@@ -185,22 +188,30 @@ def _detect_and_save(args: argparse.Namespace, outdir: Path,
         print(f"         window filter: {before:,} → {len(recs):,} records")
     events = detect_events(recs, nominal_ln_v=args.nominal_ln_v)
     snaps = pick_snapshots(recs, events, n=args.snapshots)
-    print(f"         {len(events)} events, {len(snaps)} snapshots")
+    findings = analyze_insights(recs, events, snaps, config or {})
+    print(f"         {len(events)} events, {len(snaps)} snapshots, "
+          f"{len(findings)} insight(s)")
 
     events_path = outdir / "events.json"
     snaps_path = outdir / "snapshots.json"
+    insights_path = outdir / "insights.json"
     events_path.write_text(json.dumps(
         [_event_to_json(e) for e in events], indent=2,
     ), encoding="utf-8")
     snaps_path.write_text(json.dumps(
         [_snapshot_to_json(s) for s in snaps], indent=2,
     ), encoding="utf-8")
-    print(f"         wrote {events_path.name}, {snaps_path.name}")
-    return events, snaps
+    insights_path.write_text(json.dumps(
+        [finding_to_jsonable(f) for f in findings], indent=2,
+    ), encoding="utf-8")
+    print(f"         wrote {events_path.name}, {snaps_path.name}, {insights_path.name}")
+    return events, snaps, findings
 
 
 def _write_summary_txt(outdir: Path, events: Sequence[Event],
-                       snaps: Sequence[Snapshot], config: dict) -> None:
+                       snaps: Sequence[Snapshot],
+                       findings: Sequence[Finding],
+                       config: dict) -> None:
     lines: list[str] = ["Fluke 3540 FC Session Summary", "=" * 32, ""]
     if config:
         if config.get("asset_name"):
@@ -209,6 +220,12 @@ def _write_summary_txt(outdir: Path, events: Sequence[Event],
             lines.append(f"Team:        {config['team_name']}")
         if config.get("type"):
             lines.append(f"Instrument:  {config['type']}  fw={config.get('firmware_version', '?')}")
+        lines.append("")
+    if findings:
+        lines.append("Insights")
+        lines.append("-" * 8)
+        for f in findings:
+            lines.append(f"  [{f.severity:5s}] {f.kind:25s}  {f.headline}")
         lines.append("")
     lines.append(f"Events detected: {len(events)}")
     for ev in events:
@@ -295,11 +312,24 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
     if not args.no_html:
         html_path = outdir / "report.html"
         print(f"[render] html report → {html_path}")
+        # Reload insights from disk so plot-only flows still get them.
+        insights_path = outdir / "insights.json"
+        loaded_findings: list[Finding] = []
+        if insights_path.exists():
+            import json as _json
+            for d in _json.loads(insights_path.read_text(encoding="utf-8")):
+                loaded_findings.append(Finding(
+                    id=d["id"], kind=d["kind"], severity=d["severity"],
+                    headline=d["headline"], detail=d["detail"],
+                    related_event_ids=tuple(d.get("related_event_ids", [])),
+                    recommended_actions=tuple(d.get("recommended_actions", [])),
+                ))
         write_html_report(
             html_path, charts_dir=charts_dir,
             config=config,
             summary_stats=_build_summary_stats(events, snaps),
             events=events, snapshots=snaps,
+            findings=loaded_findings,
         )
 
 
@@ -350,13 +380,14 @@ def _build_summary_stats(events: Sequence[Event], snaps: Sequence[Snapshot]) -> 
 
 
 def _emit_json(events: Sequence[Event], snaps: Sequence[Snapshot],
-               config: dict) -> None:
+               findings: Sequence[Finding], config: dict) -> None:
     """Print a single JSON object to stdout. No trailing newline beyond json.dump's."""
     payload = {
         "config": config,
         "summary_stats": _build_summary_stats(events, snaps),
         "events": [_event_to_json(e) for e in events],
         "snapshots": [_snapshot_to_json(s) for s in snaps],
+        "insights": [finding_to_jsonable(f) for f in findings],
     }
     json.dump(payload, sys.stdout)
     sys.stdout.write("\n")
@@ -411,11 +442,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         with open_session(args.session_dir) as session_dir:
             full_csv, min_csv, config = _parse_session(args, outdir, session_dir)
             trend = find_session_files(session_dir)["trend"]
-            events, snaps = _detect_and_save(args, outdir, trend)
-            _write_summary_txt(outdir, events, snaps, config)
+            events, snaps, findings = _detect_and_save(args, outdir, trend, config)
+            _write_summary_txt(outdir, events, snaps, findings, config)
 
         if getattr(args, "json_mode", False):
-            _emit_json(events, snaps, config)
+            _emit_json(events, snaps, findings, config)
             return 0
 
         if args.parse_only:

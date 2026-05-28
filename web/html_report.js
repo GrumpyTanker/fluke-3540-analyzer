@@ -32,6 +32,14 @@ figure img { max-width: 100%; height: auto; display: block; border: 1px solid #d
 figcaption { font-size: 0.85rem; color: #666; margin-top: 0.3rem; }
 footer { margin-top: 3rem; color: #888; font-size: 0.85rem;
          border-top: 1px solid #ccc; padding-top: 1rem; }
+.insight { border-left: 4px solid #888; padding: 0.5rem 1rem;
+           margin: 0.75rem 0; background: rgba(0, 0, 0, 0.025); }
+.insight.alert { border-left-color: #cc0000; }
+.insight.warn  { border-left-color: #cc6600; }
+.insight.info  { border-left-color: #0066cc; }
+.insight h3 { margin: 0 0 0.25rem 0; font-size: 1rem; }
+.insight .meta { color: #888; font-size: 0.8rem; text-transform: uppercase; }
+.insight ul { margin: 0.25rem 0 0 1.2rem; }
 @media print { body { max-width: none; } h2 { page-break-before: always; } }
 `;
 
@@ -166,7 +174,28 @@ function collectChartArtifacts() {
   return out;
 }
 
-export function buildReportHtml({ title, config, records, spec, events, snapshots }) {
+function insightsHtml(findings) {
+  if (!findings?.length) return '';
+  const out = ['<h2>Insights</h2>'];
+  for (const f of findings) {
+    const actions = (f.recommendedActions ?? []).map(
+      (a) => `<li>${esc(a)}</li>`
+    ).join('');
+    const actionsBlock = actions
+      ? `<p class="meta">Recommended</p><ul>${actions}</ul>` : '';
+    out.push(
+      `<section class="insight ${esc(f.severity)}">` +
+      `<h3>${esc(f.headline)}</h3>` +
+      `<p class="meta">${esc(f.kind)} · ${esc(f.severity)}</p>` +
+      `<p>${esc(f.detail)}</p>` +
+      `${actionsBlock}` +
+      `</section>`
+    );
+  }
+  return out.join('\n');
+}
+
+export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [] }) {
   const energy = summarizeRecords(records, spec);
   const stats = {
     'Records (per-second)': records.length.toLocaleString(),
@@ -182,6 +211,7 @@ export function buildReportHtml({ title, config, records, spec, events, snapshot
     `<h1>${esc(title)}</h1>`,
     '<h2>Summary</h2>',
     summaryDlHtml(stats, config),
+    insightsHtml(findings),
     '<h2>Events</h2>',
     eventsTableHtml(events),
     snapshotsTableHtml(snapshots),

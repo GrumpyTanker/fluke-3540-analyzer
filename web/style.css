@@ -58,6 +58,36 @@ pre.error {
   word-break: break-word;
 }
 
+/* Insights cards */
+.insights-list { display: flex; flex-direction: column; gap: 0.6rem; }
+.insight-card {
+  border-left: 4px solid var(--pico-muted-border-color, #aaa);
+  padding: 0.6rem 1rem;
+  background: var(--pico-card-background-color);
+  border-radius: 0 var(--pico-border-radius, 0.4rem) var(--pico-border-radius, 0.4rem) 0;
+}
+.insight-card.severity-alert { border-left-color: #cc0000; }
+.insight-card.severity-warn  { border-left-color: #cc6600; }
+.insight-card.severity-info  { border-left-color: #0066cc; }
+.insight-card h3 { margin: 0 0 0.2rem 0; font-size: 1rem; }
+.insight-card .insight-meta {
+  color: var(--pico-muted-color, #888);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.insight-card details > summary {
+  cursor: pointer; color: var(--pico-primary, #1095c1);
+  margin-top: 0.3rem; font-size: 0.85rem;
+}
+.insight-card details[open] > summary { color: var(--pico-muted-color, #888); }
+.insight-card ul { margin: 0.3rem 0 0 1.2rem; font-size: 0.9rem; }
+.insight-related {
+  font-size: 0.8rem; margin-top: 0.3rem;
+  color: var(--pico-muted-color, #888);
+}
+.insight-related a { margin-right: 0.4rem; }
+
 .events-toolbar {
   display: flex;
   align-items: center;

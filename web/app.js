@@ -8,6 +8,7 @@ import { buildXlsx, downloadBlob } from './xlsx_export.js';
 import { downloadBundleZip } from './bundle_export.js';
 import { looksLikeFel, unpackFel } from './fel.js';
 import { downloadHtmlReport } from './html_report.js';
+import { analyzeInsights } from './insights.js';
 
 // Try sibling first (e.g. when the Pages deploy flattens spec/ next to app.js),
 // then fall back to ../spec/ for serving from the repo root.
@@ -52,6 +53,9 @@ const els = {
   eventChartsHead:    document.getElementById('event-charts-heading'),
   snapshotCharts:     document.getElementById('snapshot-charts'),
   snapshotChartsHead: document.getElementById('snapshot-charts-heading'),
+  insightsSec:        document.getElementById('insights-section'),
+  insightsStatus:     document.getElementById('insights-status'),
+  insightsList:       document.getElementById('insights-list'),
   exportSec:          document.getElementById('export-section'),
   exportXlsxBtn:      document.getElementById('export-xlsx-btn'),
   exportHtmlBtn:      document.getElementById('export-html-btn'),
@@ -66,6 +70,7 @@ let currentRecordCount = 0;
 let currentTimeRangeMs = null;
 let currentEvents = [];       // detected events for currentRecords
 let currentSnapshots = [];    // picked snapshots for currentRecords
+let currentFindings = [];     // insights for currentRecords
 let currentWorker = null;
 
 // --- Spec lazy-load ---------------------------------------------------------
@@ -224,9 +229,13 @@ async function onParseDone(msg) {
     const spec = await getSpec();
     currentEvents = detectEvents(currentRecords, spec);
     currentSnapshots = pickSnapshots(currentRecords, currentEvents, spec, { n: 3 });
+    currentFindings = analyzeInsights(currentRecords, currentEvents, spec,
+                                      currentSnapshots, currentConfig);
+    renderInsights();
     renderEventsTable();
     renderSnapshotsList();
     renderQuantityGrid();
+    els.insightsSec.hidden = currentFindings.length === 0;
     els.eventsSec.hidden = false;
     els.snapshotsSec.hidden = currentSnapshots.length === 0;
     els.controlsSec.hidden = false;
@@ -311,6 +320,7 @@ function resetUi() {
   hideError();
   els.summarySec.hidden = true;
   els.progressSec.hidden = true;
+  els.insightsSec.hidden = true;
   els.eventsSec.hidden = true;
   els.snapshotsSec.hidden = true;
   els.controlsSec.hidden = true;
@@ -318,6 +328,72 @@ function resetUi() {
   els.exportSec.hidden = true;
   els.fileInput.value = '';
   els.dirInput.value = '';
+}
+
+function renderInsights() {
+  els.insightsList.replaceChildren();
+  els.insightsStatus.firstChild.textContent =
+    currentFindings.length === 0
+      ? 'No notable patterns detected.'
+      : `${currentFindings.length} finding(s) — sorted by severity.`;
+  for (const f of currentFindings) {
+    const card = document.createElement('article');
+    card.className = `insight-card severity-${f.severity}`;
+    const title = document.createElement('h3');
+    title.textContent = f.headline;
+    const meta = document.createElement('p');
+    meta.className = 'insight-meta';
+    meta.textContent = `${f.kind} · ${f.severity}`;
+    const detail = document.createElement('p');
+    detail.textContent = f.detail;
+    card.appendChild(title);
+    card.appendChild(meta);
+    card.appendChild(detail);
+
+    if ((f.recommendedActions ?? []).length) {
+      const det = document.createElement('details');
+      const sum = document.createElement('summary');
+      sum.textContent = `Recommended (${f.recommendedActions.length})`;
+      det.appendChild(sum);
+      const ul = document.createElement('ul');
+      for (const a of f.recommendedActions) {
+        const li = document.createElement('li');
+        li.textContent = a;
+        ul.appendChild(li);
+      }
+      det.appendChild(ul);
+      card.appendChild(det);
+    }
+
+    if ((f.relatedEventIds ?? []).length) {
+      const rel = document.createElement('p');
+      rel.className = 'insight-related';
+      rel.appendChild(document.createTextNode('Related events: '));
+      for (const id of f.relatedEventIds) {
+        const a = document.createElement('a');
+        a.href = '#';
+        a.textContent = `#${id}`;
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          scrollToEvent(id);
+        });
+        rel.appendChild(a);
+      }
+      card.appendChild(rel);
+    }
+    els.insightsList.appendChild(card);
+  }
+}
+
+function scrollToEvent(eventId) {
+  const cb = els.eventsTbody?.querySelector(`input[data-event-id="${eventId}"]`);
+  if (!cb) return;
+  cb.checked = true;
+  const tr = cb.closest('tr');
+  tr?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  tr?.style.setProperty('transition', 'background-color 1.5s ease');
+  tr?.style.setProperty('background-color', 'rgba(255, 230, 100, 0.5)');
+  setTimeout(() => tr?.style.removeProperty('background-color'), 1500);
 }
 
 async function exportXlsx() {
@@ -345,6 +421,7 @@ async function exportHtmlReport() {
   downloadHtmlReport({
     title, config: currentConfig, records: currentRecords, spec,
     events: currentEvents, snapshots: currentSnapshots,
+    findings: currentFindings,
   });
 }
 

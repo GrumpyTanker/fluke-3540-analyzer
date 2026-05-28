@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from ..events import Event
+from ..insights import Finding
 from ..snapshots import Snapshot
 
 
@@ -79,6 +80,14 @@ figure img { max-width: 100%; height: auto; display: block; border: 1px solid #d
 figcaption { font-size: 0.85rem; color: #666; margin-top: 0.3rem; }
 footer { margin-top: 3rem; color: #888; font-size: 0.85rem;
          border-top: 1px solid #ccc; padding-top: 1rem; }
+.insight { border-left: 4px solid #888; padding: 0.5rem 1rem;
+           margin: 0.75rem 0; background: rgba(0, 0, 0, 0.025); }
+.insight.alert { border-left-color: #cc0000; }
+.insight.warn  { border-left-color: #cc6600; }
+.insight.info  { border-left-color: #0066cc; }
+.insight h3 { margin: 0 0 0.25rem 0; font-size: 1rem; }
+.insight .meta { color: #888; font-size: 0.8rem; text-transform: uppercase; }
+.insight ul { margin: 0.25rem 0 0 1.2rem; }
 @media print { body { max-width: none; } h2 { page-break-before: always; } }
 """
 
@@ -170,6 +179,26 @@ def _chart_figures_html(charts: Iterable[tuple[str, bytes]]) -> str:
     return "\n".join(out)
 
 
+def _insights_html(findings: Sequence[Finding]) -> str:
+    if not findings:
+        return ""
+    out = ["<h2>Insights</h2>"]
+    for f in findings:
+        actions = "".join(
+            f"<li>{html.escape(a)}</li>" for a in f.recommended_actions
+        )
+        actions_block = f"<p class='meta'>Recommended</p><ul>{actions}</ul>" if actions else ""
+        out.append(
+            f"<section class='insight {html.escape(f.severity)}'>"
+            f"<h3>{html.escape(f.headline)}</h3>"
+            f"<p class='meta'>{html.escape(f.kind)} · {html.escape(f.severity)}</p>"
+            f"<p>{html.escape(f.detail)}</p>"
+            f"{actions_block}"
+            "</section>"
+        )
+    return "\n".join(out)
+
+
 def render_report_html(
     *,
     title: str,
@@ -178,6 +207,7 @@ def render_report_html(
     events: Sequence[Event],
     snapshots: Sequence[Snapshot],
     charts: Iterable[tuple[str, bytes]],
+    findings: Sequence[Finding] = (),
     generated_at: dt.datetime | None = None,
 ) -> str:
     generated_at = generated_at or dt.datetime.now(dt.timezone.utc)
@@ -185,6 +215,8 @@ def render_report_html(
     body.append(f"<h1>{html.escape(title)}</h1>")
     body.append("<h2>Summary</h2>")
     body.append(_summary_dl_html(summary_stats, config))
+    if findings:
+        body.append(_insights_html(findings))
     body.append("<h2>Events</h2>")
     body.append(_events_table_html(events))
     if snapshots:
@@ -212,6 +244,7 @@ def write_html_report(
     summary_stats: Mapping[str, str | int | float],
     events: Sequence[Event],
     snapshots: Sequence[Snapshot],
+    findings: Sequence[Finding] = (),
     title: str | None = None,
 ) -> Path:
     """High-level wrapper: read PNGs from charts_dir, write a self-contained HTML report.
@@ -231,6 +264,7 @@ def write_html_report(
         render_report_html(
             title=title, config=config, summary_stats=summary_stats,
             events=events, snapshots=snapshots, charts=charts,
+            findings=findings,
         ),
         encoding="utf-8",
     )
