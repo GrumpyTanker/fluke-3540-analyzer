@@ -93,6 +93,9 @@ def build_argparser() -> argparse.ArgumentParser:
                       help="Write CSV + events.json + summary; no charts")
     mode.add_argument("--plot-only", action="store_true",
                       help="Reuse existing CSV + events.json; render charts only")
+    mode.add_argument("--json", action="store_true", dest="json_mode",
+                      help="Parse + detect, emit a single JSON blob to stdout, "
+                           "no charts, no logs. Useful for piping into jq.")
 
     # Filters
     ap.add_argument("--from", dest="from_time", type=_parse_time, default=None,
@@ -323,6 +326,30 @@ def _interactive(events: Sequence[Event], snaps: Sequence[Snapshot],
     return picked_events, picked_qtys
 
 
+def _build_summary_stats(events: Sequence[Event], snaps: Sequence[Snapshot]) -> dict:
+    by_kind: dict[str, int] = {}
+    for ev in events:
+        by_kind[ev.kind] = by_kind.get(ev.kind, 0) + 1
+    return {
+        "event_count": len(events),
+        "events_by_kind": by_kind,
+        "snapshot_count": len(snaps),
+    }
+
+
+def _emit_json(events: Sequence[Event], snaps: Sequence[Snapshot],
+               config: dict) -> None:
+    """Print a single JSON object to stdout. No trailing newline beyond json.dump's."""
+    payload = {
+        "config": config,
+        "summary_stats": _build_summary_stats(events, snaps),
+        "events": [_event_to_json(e) for e in events],
+        "snapshots": [_snapshot_to_json(s) for s in snaps],
+    }
+    json.dump(payload, sys.stdout)
+    sys.stdout.write("\n")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # Make console output UTF-8 safe on Windows (default cp1252 chokes on →, σ, etc.)
     for stream in (sys.stdout, sys.stderr):
@@ -333,6 +360,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pass
 
     args = build_argparser().parse_args(argv)
+
+    # In --json mode, suppress every other stdout print so the output stays
+    # a single valid JSON blob. We do this by replacing the module-level
+    # print() with a no-op for the duration of this call.
+    if getattr(args, "json_mode", False):
+        global print
+        _original_print = print
+        def print(*a, **kw):  # noqa: A001 — intentional shadow
+            kw.setdefault("file", sys.stderr)
+            _original_print(*a, **kw)
 
     if not args.session_dir.exists():
         print(f"ERROR: {args.session_dir} does not exist", file=sys.stderr)
@@ -358,6 +395,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             trend = find_session_files(session_dir)["trend"]
             events, snaps = _detect_and_save(args, outdir, trend)
             _write_summary_txt(outdir, events, snaps, config)
+
+        if getattr(args, "json_mode", False):
+            _emit_json(events, snaps, config)
+            return 0
 
         if args.parse_only:
             print(f"[done] parse-only: {outdir}")

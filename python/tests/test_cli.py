@@ -144,6 +144,21 @@ def test_parse_only_produces_expected_files(synthetic_session_dir, tmp_path):
     assert isinstance(evs, list)
 
 
+def test_json_mode_emits_valid_json(synthetic_session_dir, tmp_path, capsys):
+    out = tmp_path / "json_out"
+    rc = main([str(synthetic_session_dir), "-o", str(out), "--json"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert set(payload.keys()) >= {"config", "summary_stats", "events", "snapshots"}
+    assert isinstance(payload["events"], list)
+    assert isinstance(payload["snapshots"], list)
+    assert "event_count" in payload["summary_stats"]
+    # Should still produce the on-disk artifacts so --plot-only could pick up
+    assert (out / "session.csv").is_file()
+    assert (out / "events.json").is_file()
+
+
 def test_parse_only_with_window_filter(synthetic_session_dir, tmp_path):
     out = tmp_path / "filtered_out"
     # synthetic fixture has 10 records starting at 2024-01-13T22:00:00 UTC.
