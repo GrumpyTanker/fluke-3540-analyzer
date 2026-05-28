@@ -23,157 +23,194 @@
       </hgroup>
     </header>
 
-    <section id="drop-zone" class="drop-zone" aria-label="File drop zone">
-      <div class="drop-zone-inner">
-        <p class="drop-icon" aria-hidden="true">⬇</p>
-        <p><strong>Drop a <code>trend.bin</code>, a <code>.fel</code> bundle, an <code>ES.NNN/</code> folder, or a pre-parsed <code>session.csv</code></strong><br>
-          (the binary or .fel gives you the full pipeline; CSV input skips the parser and analyses an existing export).</p>
-        <p>
-          <label for="file-input" role="button" class="secondary outline">Browse for file&hellip;</label>
-          <input type="file" id="file-input" accept=".bin,.fel,.csv,application/octet-stream,application/zip,text/csv" hidden>
-          <label for="dir-input" role="button" class="secondary outline">Pick session folder&hellip;</label>
-          <input type="file" id="dir-input" webkitdirectory directory multiple hidden>
-        </p>
-      </div>
-    </section>
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab-btn is-active" data-tab="import" role="tab">1. Import</button>
+      <button type="button" class="tab-btn" data-tab="explore" role="tab" disabled>2. Explore</button>
+      <button type="button" class="tab-btn" data-tab="export" role="tab" disabled>3. Export</button>
+    </nav>
 
-    <section id="progress-section" hidden>
-      <h2>Parsing&hellip;</h2>
-      <progress id="progress-bar" value="0" max="100"></progress>
-      <p id="progress-label"><small>0% — preparing</small></p>
-    </section>
+    <!-- ===================== Tab 1: IMPORT ===================== -->
+    <div class="tab-pane is-active" data-tab-pane="import" role="tabpanel">
 
-    <section id="sessions-section" hidden>
-      <h2>Sessions</h2>
-      <div id="sessions-bar" class="sessions-bar"></div>
-      <p>
-        <label for="add-session-input" role="button" class="secondary outline">+ Add session for comparison&hellip;</label>
-        <input type="file" id="add-session-input" accept=".bin,.fel,.csv,application/octet-stream,application/zip,text/csv" hidden>
-        <button type="button" id="compare-toggle-btn" class="secondary outline" hidden>Compare overlay</button>
-      </p>
-    </section>
-
-    <section id="summary-section" hidden>
-      <h2>Session summary</h2>
-      <div id="summary-grid" class="summary-grid"></div>
-
-      <fieldset>
-        <legend><strong>Reverse CTs</strong> <small>— flip sign of P / Q / PF / DPF / Wh / VARh on selected phases (totals follow)</small></legend>
-        <label><input type="checkbox" id="reverse-cts-a" data-phase="a"> Phase A</label>
-        <label><input type="checkbox" id="reverse-cts-b" data-phase="b"> Phase B</label>
-        <label><input type="checkbox" id="reverse-cts-c" data-phase="c"> Phase C</label>
-      </fieldset>
-
-      <details>
-        <summary>Notes</summary>
-        <p><small>
-          The web app reads <code>trend.bin</code> entirely in your browser via a
-          <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API">Web Worker</a>.
-          Nothing is uploaded.
-        </small></p>
-      </details>
-    </section>
-
-    <section id="insights-section" hidden>
-      <h2>Insights</h2>
-      <p id="insights-status"><small></small></p>
-      <div id="insights-list" class="insights-list"></div>
-    </section>
-
-    <section id="tariff-section" hidden>
-      <h2>Energy cost (tariff)</h2>
-      <fieldset>
-        <legend><small>Define a peak / off-peak tariff to see $$ cost. Hours are in UTC, peak window is comma-separated <code>HH-HH</code> (e.g. <code>09-21</code>).</small></legend>
-        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem;">
-          <label>Currency <input type="text" id="tariff-currency" maxlength="6" value="USD" style="max-width: 8rem;"></label>
-          <label>Peak $/kWh <input type="number" id="tariff-peak-rate" step="0.001" min="0" value="0"></label>
-          <label>Off-peak $/kWh <input type="number" id="tariff-offpeak-rate" step="0.001" min="0" value="0"></label>
+      <section id="drop-zone" class="drop-zone" aria-label="File drop zone">
+        <div class="drop-zone-inner">
+          <p class="drop-icon" aria-hidden="true">⬇</p>
+          <p><strong>Drop a <code>trend.bin</code>, a <code>.fel</code> bundle, an <code>ES.NNN/</code> folder, or a pre-parsed <code>session.csv</code></strong><br>
+            (the binary or .fel gives you the full pipeline; CSV input skips the parser and analyses an existing export).</p>
+          <p>
+            <label for="file-input" role="button" class="secondary outline">Browse for file&hellip;</label>
+            <input type="file" id="file-input" accept=".bin,.fel,.csv,application/octet-stream,application/zip,text/csv" hidden>
+            <label for="dir-input" role="button" class="secondary outline">Pick session folder&hellip;</label>
+            <input type="file" id="dir-input" webkitdirectory directory multiple hidden>
+          </p>
         </div>
-        <label>Peak hours <input type="text" id="tariff-peak-hours" placeholder="e.g. 09-21"></label>
-      </fieldset>
-      <fieldset>
-        <legend><small>Optional: tell the insights engine your main breaker rating to get headroom and over-rating findings.</small></legend>
-        <label>Main breaker (A) <input type="number" id="breaker-rating" step="1" min="0" placeholder="e.g. 400" style="max-width: 10rem;"></label>
-      </fieldset>
-      <p><button type="button" id="tariff-apply-btn" class="secondary">Apply tariff &amp; breaker</button></p>
-      <div id="tariff-result" class="summary-grid"></div>
-    </section>
+      </section>
 
-    <section id="events-section" hidden>
-      <h2>Events</h2>
-      <p id="events-status"><small></small></p>
-      <div class="events-toolbar">
-        <input type="search" id="events-search" placeholder="Search by kind or phase (e.g. dip, c)" autocomplete="off">
-        <div id="events-kind-chips" class="kind-chips"></div>
-        <button type="button" id="events-clear-filters" class="secondary outline">Clear filters</button>
-        <button type="button" id="events-export-notes" class="secondary outline" title="Download all annotations as JSON">Export notes</button>
-      </div>
-      <table id="events-table" class="events-table">
-        <thead>
-          <tr>
-            <th></th>
-            <th>ID</th>
-            <th>Kind</th>
-            <th>Start (UTC)</th>
-            <th>Duration</th>
-            <th>Phases</th>
-            <th>Severity</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="events-tbody"></tbody>
-      </table>
-    </section>
+      <section id="progress-section" hidden>
+        <h2>Parsing&hellip;</h2>
+        <progress id="progress-bar" value="0" max="100"></progress>
+        <p id="progress-label"><small>0% — preparing</small></p>
+      </section>
 
-    <section id="snapshots-section" hidden>
-      <h2>Quiet snapshots</h2>
-      <p><small>Calmest 5-minute windows that don't overlap detected events. Useful baseline plots.</small></p>
-      <ul id="snapshots-list"></ul>
-    </section>
+      <section id="sessions-section" hidden>
+        <h2>Sessions</h2>
+        <div id="sessions-bar" class="sessions-bar"></div>
+        <p>
+          <label for="add-session-input" role="button" class="secondary outline">+ Add session for comparison&hellip;</label>
+          <input type="file" id="add-session-input" accept=".bin,.fel,.csv,application/octet-stream,application/zip,text/csv" hidden>
+          <button type="button" id="compare-toggle-btn" class="secondary outline" hidden>Compare overlay</button>
+        </p>
+      </section>
 
-    <section id="range-section" hidden>
-      <h2>Range select</h2>
-      <div id="range-container"></div>
-    </section>
+      <section id="summary-section" hidden>
+        <h2>Session summary</h2>
+        <div id="summary-grid" class="summary-grid"></div>
 
-    <section id="controls-section" hidden>
-      <h2>Render charts</h2>
-      <fieldset>
-        <legend><strong>Quantities</strong></legend>
-        <div id="quantity-grid" class="checkbox-grid"></div>
-      </fieldset>
-      <fieldset class="zoom-controls">
-        <legend><strong>Event zoom window</strong></legend>
-        <label>Pre-event (sec) <input type="number" id="pre-secs" min="0" max="3600" value="30" style="max-width: 8rem;"></label>
-        <label>Post-event (sec) <input type="number" id="post-secs" min="0" max="3600" value="60" style="max-width: 8rem;"></label>
-      </fieldset>
-      <button id="render-button" type="button">Render selected</button>
-    </section>
+        <fieldset>
+          <legend><strong>Reverse CTs</strong> <small>— flip sign of P / Q / PF / DPF / Wh / VARh on selected phases (totals follow)</small></legend>
+          <label><input type="checkbox" id="reverse-cts-a" data-phase="a"> Phase A</label>
+          <label><input type="checkbox" id="reverse-cts-b" data-phase="b"> Phase B</label>
+          <label><input type="checkbox" id="reverse-cts-c" data-phase="c"> Phase C</label>
+        </fieldset>
 
-    <section id="charts-section" hidden>
-      <h2>Charts</h2>
-      <div id="full-charts" class="charts-area"></div>
-      <h3 id="event-charts-heading" hidden>Event zooms</h3>
-      <div id="event-charts" class="charts-area"></div>
-      <h3 id="snapshot-charts-heading" hidden>Snapshot zooms</h3>
-      <div id="snapshot-charts" class="charts-area"></div>
-    </section>
+        <details>
+          <summary>Notes</summary>
+          <p><small>
+            The web app reads <code>trend.bin</code> entirely in your browser via a
+            <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API">Web Worker</a>.
+            Nothing is uploaded.
+          </small></p>
+        </details>
+      </section>
 
-    <section id="export-section" hidden>
-      <h2>Export</h2>
-      <p>
-        <button type="button" id="export-xlsx-btn">Download XLSX workbook</button>
-        <button type="button" id="export-html-btn" class="secondary">Download HTML report</button>
-        <button type="button" id="export-pdf-btn" class="secondary">Download PDF report</button>
-        <button type="button" id="export-bundle-btn" class="secondary">Download everything (.zip)</button>
-      </p>
-      <p><small>
-        <strong>XLSX</strong> = workbook with Summary + Data sheets.
-        <strong>HTML report</strong> = single self-contained .html embedding the rendered charts + summary + events table (opens in any browser, no scripts).
-        <strong>.zip</strong> bundles the workbook, slim CSV, and every chart PNG.
-      </small></p>
-    </section>
+      <section id="tariff-section" hidden>
+        <h2>Energy cost (tariff)</h2>
+        <fieldset>
+          <legend><small>Define a peak / off-peak tariff to see $$ cost. Hours are in UTC, peak window is comma-separated <code>HH-HH</code> (e.g. <code>09-21</code>).</small></legend>
+          <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem;">
+            <label>Currency <input type="text" id="tariff-currency" maxlength="6" value="USD" style="max-width: 8rem;"></label>
+            <label>Peak $/kWh <input type="number" id="tariff-peak-rate" step="0.001" min="0" value="0"></label>
+            <label>Off-peak $/kWh <input type="number" id="tariff-offpeak-rate" step="0.001" min="0" value="0"></label>
+          </div>
+          <label>Peak hours <input type="text" id="tariff-peak-hours" placeholder="e.g. 09-21"></label>
+        </fieldset>
+        <fieldset>
+          <legend><small>Optional: tell the insights engine your main breaker rating to get headroom and over-rating findings.</small></legend>
+          <label>Main breaker (A) <input type="number" id="breaker-rating" step="1" min="0" placeholder="e.g. 400" style="max-width: 10rem;"></label>
+        </fieldset>
+        <p><button type="button" id="tariff-apply-btn" class="secondary">Apply tariff &amp; breaker</button></p>
+        <div id="tariff-result" class="summary-grid"></div>
+      </section>
 
+      <nav class="tab-step-nav" hidden id="step-nav-import">
+        <button type="button" class="primary" data-goto-tab="explore">Next: Explore →</button>
+      </nav>
+    </div>
+
+    <!-- ===================== Tab 2: EXPLORE ===================== -->
+    <div class="tab-pane" data-tab-pane="explore" role="tabpanel" hidden>
+
+      <section id="range-section" hidden>
+        <h2>Range select</h2>
+        <div id="range-container"></div>
+      </section>
+
+      <section id="insights-section" hidden>
+        <h2>Insights</h2>
+        <p id="insights-status"><small></small></p>
+        <div id="insights-list" class="insights-list"></div>
+      </section>
+
+      <section id="events-section" hidden>
+        <h2>Events</h2>
+        <p id="events-status"><small></small></p>
+        <div class="events-toolbar">
+          <input type="search" id="events-search" placeholder="Search by kind or phase (e.g. dip, c)" autocomplete="off">
+          <div id="events-kind-chips" class="kind-chips"></div>
+          <button type="button" id="events-clear-filters" class="secondary outline">Clear filters</button>
+          <button type="button" id="events-export-notes" class="secondary outline" title="Download all annotations as JSON">Export notes</button>
+        </div>
+        <table id="events-table" class="events-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>ID</th>
+              <th>Kind</th>
+              <th>Start (UTC)</th>
+              <th>Duration</th>
+              <th>Phases</th>
+              <th>Severity</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="events-tbody"></tbody>
+        </table>
+      </section>
+
+      <section id="snapshots-section" hidden>
+        <h2>Quiet snapshots</h2>
+        <p><small>Calmest 5-minute windows that don't overlap detected events. Useful baseline plots.</small></p>
+        <ul id="snapshots-list"></ul>
+      </section>
+
+      <section id="controls-section" hidden>
+        <h2>Render charts</h2>
+        <fieldset>
+          <legend><strong>Quantities</strong></legend>
+          <div id="quantity-grid" class="checkbox-grid"></div>
+        </fieldset>
+        <fieldset class="zoom-controls">
+          <legend><strong>Event zoom window</strong></legend>
+          <label>Pre-event (sec) <input type="number" id="pre-secs" min="0" max="3600" value="30" style="max-width: 8rem;"></label>
+          <label>Post-event (sec) <input type="number" id="post-secs" min="0" max="3600" value="60" style="max-width: 8rem;"></label>
+        </fieldset>
+        <button id="render-button" type="button">Render selected</button>
+      </section>
+
+      <section id="charts-section" hidden>
+        <h2>Charts</h2>
+        <div id="full-charts" class="charts-area"></div>
+        <h3 id="event-charts-heading" hidden>Event zooms</h3>
+        <div id="event-charts" class="charts-area"></div>
+        <h3 id="snapshot-charts-heading" hidden>Snapshot zooms</h3>
+        <div id="snapshot-charts" class="charts-area"></div>
+      </section>
+
+      <nav class="tab-step-nav" hidden id="step-nav-explore">
+        <button type="button" class="secondary" data-goto-tab="import">← Back: Import</button>
+        <button type="button" class="primary" data-goto-tab="export">Next: Export →</button>
+      </nav>
+    </div>
+
+    <!-- ===================== Tab 3: EXPORT ===================== -->
+    <div class="tab-pane" data-tab-pane="export" role="tabpanel" hidden>
+
+      <section id="export-section">
+        <h2>Export</h2>
+        <p id="export-scope-hint"><small></small></p>
+        <p>
+          <button type="button" id="export-xlsx-btn">Download XLSX workbook</button>
+          <button type="button" id="export-html-btn" class="secondary">Download HTML report</button>
+          <button type="button" id="export-pdf-btn" class="secondary">Download PDF report</button>
+          <button type="button" id="export-bundle-btn" class="secondary">Download everything (.zip)</button>
+        </p>
+        <p><small>
+          <strong>XLSX</strong> — workbook with Summary + Data sheets.
+          <strong>HTML report</strong> — self-contained .html embedding rendered charts + summary + events (opens in any browser).
+          <strong>PDF report</strong> — A4 pages with cover, insights, events table, one chart per page.
+          <strong>.zip</strong> — bundles the workbook, slim CSV, and every chart PNG.
+        </small></p>
+        <p id="export-hint" hidden><small>
+          ⚠ Render charts on the Explore tab first — exports include whatever is currently rendered.
+        </small></p>
+      </section>
+
+      <nav class="tab-step-nav" hidden id="step-nav-export">
+        <button type="button" class="secondary" data-goto-tab="explore">← Back: Explore</button>
+      </nav>
+    </div>
+
+    <!-- Error overlay stays outside the tab panes so it surfaces from any step. -->
     <section id="error-section" hidden>
       <h2>Parse failed</h2>
       <pre id="error-message" class="error"></pre>

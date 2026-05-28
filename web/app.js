@@ -348,6 +348,10 @@ async function onParseDone(msg) {
     setupRangeSelector(spec);
     loadTariffIntoForm();
     renderTariffResult();
+    // Unlock Explore + Export tabs and auto-advance to Explore.
+    tabState.hasSession = true;
+    updateTabUnlocks();
+    if (tabState.current === 'import') activateTab('explore');
   } catch (e) {
     showError(e);
     return;
@@ -434,12 +438,15 @@ function resetUi() {
   els.snapshotsSec.hidden = true;
   els.controlsSec.hidden = true;
   els.chartsSec.hidden = true;
-  els.exportSec.hidden = true;
   els.rangeSec.hidden = true;
   els.tariffSec.hidden = true;
   if (rangeSelector) { rangeSelector.destroy(); rangeSelector = null; }
   currentRange = null;
   ms.clear();
+  tabState.hasSession = false;
+  tabState.hasCharts = false;
+  updateTabUnlocks();
+  activateTab('import');
   els.fileInput.value = '';
   els.dirInput.value = '';
 }
@@ -1040,6 +1047,7 @@ async function renderAll() {
     }
   }
 
+  tabState.hasCharts = true;
   // Snapshot zooms
   els.snapshotChartsHead.hidden = snIds.size === 0;
   for (const s of currentSnapshots) {
@@ -1391,6 +1399,67 @@ function showShortcutsHelp() {
   card.appendChild(close);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
+}
+
+// --- Tabs (3-step flow) ----------------------------------------------------
+
+const tabState = {
+  hasSession: false,    // unlocks Explore + Export tabs
+  hasCharts:  false,    // shows the "Render first" hint on Export
+  current:    'import',
+};
+
+function activateTab(name) {
+  for (const btn of document.querySelectorAll('.tab-btn')) {
+    const isActive = btn.dataset.tab === name;
+    btn.classList.toggle('is-active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  }
+  for (const pane of document.querySelectorAll('.tab-pane')) {
+    pane.hidden = pane.dataset.tabPane !== name;
+  }
+  tabState.current = name;
+  if (name === 'export') refreshExportTab();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function updateTabUnlocks() {
+  for (const btn of document.querySelectorAll('.tab-btn')) {
+    if (btn.dataset.tab === 'import') continue;  // Import always available
+    btn.disabled = !tabState.hasSession;
+  }
+  document.getElementById('step-nav-import').hidden = !tabState.hasSession;
+  document.getElementById('step-nav-explore').hidden = !tabState.hasSession;
+  document.getElementById('step-nav-export').hidden = !tabState.hasSession;
+}
+
+function refreshExportTab() {
+  const hint = document.getElementById('export-hint');
+  const scope = document.getElementById('export-scope-hint');
+  hint.hidden = tabState.hasCharts;
+  if (currentRange) {
+    scope.firstChild.textContent =
+      `Range active: ${new Date(currentRange.startMs).toISOString().slice(11, 19)}` +
+      `–${new Date(currentRange.endMs).toISOString().slice(11, 19)}. ` +
+      `Exports below will be scoped to this range.`;
+  } else if (ms.compareMode && ms.canCompare()) {
+    scope.firstChild.textContent =
+      `Compare mode (${ms.count()} sessions). HTML / PDF exports will use the multi-session template.`;
+  } else {
+    scope.firstChild.textContent =
+      `Whole-session export (no range or compare mode active).`;
+  }
+}
+
+// Wire up tab navigation
+for (const btn of document.querySelectorAll('.tab-btn')) {
+  btn.addEventListener('click', () => {
+    if (btn.disabled) return;
+    activateTab(btn.dataset.tab);
+  });
+}
+for (const btn of document.querySelectorAll('[data-goto-tab]')) {
+  btn.addEventListener('click', () => activateTab(btn.dataset.gotoTab));
 }
 
 // "Clear cache" link in the footer
