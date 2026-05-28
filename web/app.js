@@ -651,9 +651,13 @@ async function renderAll() {
   els.snapshotCharts.replaceChildren();
 
   // Full-session charts — scoped to current range if one is set.
-  const fullOpts = currentRange
-    ? { startMs: currentRange.startMs, endMs: currentRange.endMs }
-    : {};
+  // Anomaly bands are drawn on every full chart (visual triage).
+  const fullOpts = {
+    eventBands: currentEvents,
+    ...(currentRange
+      ? { startMs: currentRange.startMs, endMs: currentRange.endMs }
+      : {}),
+  };
   for (const q of quantities) {
     renderChart(els.fullCharts, currentRecords, spec, q, FULL_QUANTITIES, fullOpts);
   }

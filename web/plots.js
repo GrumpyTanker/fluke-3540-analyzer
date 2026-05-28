@@ -13,6 +13,17 @@ function uplotOrThrow() {
 
 const COLORS = ['#cc0000', '#0066cc', '#009933', '#660066'];
 
+// Semi-transparent fill colors for the anomaly overlay (full-session charts only).
+const EVENT_BAND_COLORS = {
+  outage:          'rgba(204, 0, 0, 0.18)',
+  dip:             'rgba(255, 153, 0, 0.14)',
+  swell:           'rgba(255, 200, 0, 0.14)',
+  high_current:    'rgba(204, 0, 204, 0.14)',
+  freq_excursion:  'rgba(102, 0, 102, 0.14)',
+  imbalance_spike: 'rgba(0, 102, 204, 0.12)',
+  power_step:      'rgba(0, 153, 51, 0.12)',
+};
+
 // Quantity definitions for the full-session view.
 // Each: { title, ylabel, series: [{name, label, scale}] }
 export const FULL_QUANTITIES = {
@@ -129,7 +140,7 @@ function buildPlotData(records, spec, quantityDef, startMs, endMs) {
  * Render one uPlot chart into a container.
  * @returns {{plot: uPlot, container: HTMLDivElement, data: any[], def: object}}
  */
-export function renderChart(parentEl, records, spec, quantityKey, quantityMap = FULL_QUANTITIES, { startMs = null, endMs = null, width = null } = {}) {
+export function renderChart(parentEl, records, spec, quantityKey, quantityMap = FULL_QUANTITIES, { startMs = null, endMs = null, width = null, eventBands = null } = {}) {
   const uPlot = uplotOrThrow();
   const def = quantityMap[quantityKey];
   if (!def) throw new Error(`unknown quantity: ${quantityKey}`);
@@ -186,10 +197,11 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
       { stroke: '#666' },
       { stroke: '#666', label: def.ylabel },
     ],
-    // Default cursor.drag = { setScale: true } gives box-zoom behavior.
-    // Shift held during drag pans instead of zooming (we hook below).
     cursor: { drag: { x: true, y: false, setScale: true }, focus: { prox: 8 } },
     legend: { live: true },
+    hooks: eventBands && eventBands.length ? {
+      drawClear: [(u) => drawEventBands(u, eventBands)],
+    } : {},
   };
   const plot = new uPlot(opts, data, chartDiv);
 
@@ -213,6 +225,28 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
   });
 
   return { plot, container: wrapper, data, def };
+}
+
+function drawEventBands(u, eventBands) {
+  const ctx = u.ctx;
+  const { top, height } = u.bbox;
+  ctx.save();
+  for (const ev of eventBands) {
+    const color = EVENT_BAND_COLORS[ev.kind];
+    if (!color) continue;
+    const xStartSec = ev.tStartMs / 1000;
+    const xEndSec = ev.tEndMs / 1000;
+    const xs = u.scales.x;
+    // Cull bands outside the current view
+    if (xs.min != null && xEndSec < xs.min) continue;
+    if (xs.max != null && xStartSec > xs.max) continue;
+    const xs0 = u.valToPos(xStartSec, 'x', true);
+    const xs1 = u.valToPos(xEndSec, 'x', true);
+    const w = Math.max(2, xs1 - xs0);  // give pinpoint events at least 2px width
+    ctx.fillStyle = color;
+    ctx.fillRect(xs0, top, w, height);
+  }
+  ctx.restore();
 }
 
 function attachZoomOnScroll(plot, chartDiv) {
