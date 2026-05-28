@@ -1,5 +1,14 @@
 /* Custom on top of Pico — drop zone visuals + summary grid. */
 
+/* Footer theme radios should sit inline next to the rest of the text */
+footer label {
+  display: inline-block;
+  margin-left: 0.25rem;
+}
+footer label input[type=radio] {
+  margin-right: 0.15rem;
+}
+
 .drop-zone {
   border: 2px dashed var(--pico-muted-border-color, #a0a0a0);
   border-radius: var(--pico-border-radius, 0.5rem);
@@ -48,6 +57,44 @@ pre.error {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.events-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+.events-toolbar input[type=search] {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+  margin: 0;
+}
+.events-toolbar button {
+  margin: 0;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+}
+.kind-chips {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+.kind-chip {
+  padding: 0.15rem 0.6rem;
+  border-radius: 1rem;
+  border: 1px solid var(--pico-muted-border-color, #aaa);
+  background: var(--pico-card-background-color);
+  cursor: pointer;
+  font-size: 0.8rem;
+  user-select: none;
+  transition: opacity 100ms ease;
+}
+.kind-chip.is-off {
+  opacity: 0.35;
+  text-decoration: line-through;
+}
+.events-table tr.is-hidden { display: none; }
 
 .events-table {
   font-size: 0.9rem;

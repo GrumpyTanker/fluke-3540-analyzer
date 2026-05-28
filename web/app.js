@@ -35,6 +35,9 @@ const els = {
   eventsSec:          document.getElementById('events-section'),
   eventsStatus:       document.getElementById('events-status'),
   eventsTbody:        document.getElementById('events-tbody'),
+  eventsSearch:       document.getElementById('events-search'),
+  eventsKindChips:    document.getElementById('events-kind-chips'),
+  eventsClearFilters: document.getElementById('events-clear-filters'),
   snapshotsSec:       document.getElementById('snapshots-section'),
   snapshotsList:      document.getElementById('snapshots-list'),
   controlsSec:        document.getElementById('controls-section'),
@@ -339,6 +342,9 @@ function formatDate(ms) {
   return new Date(ms).toISOString();
 }
 
+// Tracks which event kinds are hidden by the chip toggles.
+const hiddenKinds = new Set();
+
 function renderEventsTable() {
   els.eventsStatus.firstChild.textContent =
     currentEvents.length === 0
@@ -348,6 +354,10 @@ function renderEventsTable() {
   for (const ev of currentEvents) {
     const tr = document.createElement('tr');
     tr.className = `kind-${ev.kind}`;
+    tr.dataset.kind = ev.kind;
+    tr.dataset.searchHaystack = (
+      ev.kind + ' ' + (ev.affectedPhases ?? []).join(' ')
+    ).toLowerCase();
     const td = (content) => {
       const c = document.createElement('td');
       if (content instanceof Node) c.appendChild(content);
@@ -367,6 +377,53 @@ function renderEventsTable() {
     tr.appendChild(td((ev.affectedPhases ?? []).join('/') || '—'));
     tr.appendChild(td(ev.severity.toFixed(3)));
     els.eventsTbody.appendChild(tr);
+  }
+  renderKindChips();
+  applyEventsFilter();
+}
+
+function renderKindChips() {
+  els.eventsKindChips.replaceChildren();
+  const counts = new Map();
+  for (const ev of currentEvents) counts.set(ev.kind, (counts.get(ev.kind) ?? 0) + 1);
+  for (const [kind, n] of [...counts.entries()].sort()) {
+    const chip = document.createElement('span');
+    chip.className = 'kind-chip kind-' + kind;
+    if (hiddenKinds.has(kind)) chip.classList.add('is-off');
+    chip.textContent = `${kind} (${n})`;
+    chip.title = hiddenKinds.has(kind) ? 'Click to show' : 'Click to hide';
+    chip.addEventListener('click', () => {
+      if (hiddenKinds.has(kind)) hiddenKinds.delete(kind);
+      else hiddenKinds.add(kind);
+      renderKindChips();
+      applyEventsFilter();
+    });
+    els.eventsKindChips.appendChild(chip);
+  }
+}
+
+function applyEventsFilter() {
+  const query = (els.eventsSearch?.value ?? '').trim().toLowerCase();
+  let shown = 0;
+  for (const tr of els.eventsTbody.querySelectorAll('tr')) {
+    const kind = tr.dataset.kind;
+    const haystack = tr.dataset.searchHaystack ?? '';
+    const matchesQuery = !query || haystack.includes(query);
+    const matchesKind = !hiddenKinds.has(kind);
+    const visible = matchesQuery && matchesKind;
+    tr.classList.toggle('is-hidden', !visible);
+    if (visible) shown++;
+  }
+  // Update the status line to reflect filtering
+  if (currentEvents.length > 0) {
+    const filterApplied = query || hiddenKinds.size > 0;
+    if (filterApplied) {
+      els.eventsStatus.firstChild.textContent =
+        `Showing ${shown} of ${currentEvents.length} event(s).`;
+    } else {
+      els.eventsStatus.firstChild.textContent =
+        `${currentEvents.length} event(s) detected. Tick rows to include them when you click Render.`;
+    }
   }
 }
 
@@ -556,9 +613,44 @@ for (const cb of [els.reverseA, els.reverseB, els.reverseC]) {
   });
 }
 els.resetBtn.addEventListener('click', resetUi);
+els.eventsSearch?.addEventListener('input', applyEventsFilter);
+els.eventsClearFilters?.addEventListener('click', () => {
+  els.eventsSearch.value = '';
+  hiddenKinds.clear();
+  renderKindChips();
+  applyEventsFilter();
+});
 els.renderBtn.addEventListener('click', () => renderAll().catch(showError));
 els.exportXlsxBtn.addEventListener('click', () => exportXlsx().catch(showError));
 els.exportBundleBtn.addEventListener('click', () => exportBundle().catch(showError));
+
+// --- Theme (light / dark / auto) -------------------------------------------
+
+const THEME_STORAGE_KEY = 'fluke3540.theme';
+
+function applyTheme(theme) {
+  if (theme === 'auto') {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', theme);
+  }
+}
+
+function loadTheme() {
+  const saved = localStorage.getItem(THEME_STORAGE_KEY) ?? 'auto';
+  applyTheme(saved);
+  const radio = document.getElementById('theme-' + saved);
+  if (radio) radio.checked = true;
+}
+
+document.querySelectorAll('input[name=theme]').forEach((r) => {
+  r.addEventListener('change', () => {
+    const v = r.value;
+    localStorage.setItem(THEME_STORAGE_KEY, v);
+    applyTheme(v);
+  });
+});
+loadTheme();
 
 // Prefetch the spec so first-drop is snappy.
 getSpec().catch(() => {/* surface only when actually parsing */});

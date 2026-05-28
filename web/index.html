@@ -64,6 +64,11 @@
     <section id="events-section" hidden>
       <h2>Events</h2>
       <p id="events-status"><small></small></p>
+      <div class="events-toolbar">
+        <input type="search" id="events-search" placeholder="Search by kind or phase (e.g. dip, c)" autocomplete="off">
+        <div id="events-kind-chips" class="kind-chips"></div>
+        <button type="button" id="events-clear-filters" class="secondary outline">Clear filters</button>
+      </div>
       <table id="events-table" class="events-table">
         <thead>
           <tr>
@@ -131,7 +136,12 @@
       <small>
         <a href="https://github.com/GrumpyTanker/fluke-3540-analyzer">Source on GitHub</a> ·
         MIT-licensed ·
-        Built on <a href="https://github.com/alaincc/FLUKELOAD">FLUKELOAD</a>.
+        Built on <a href="https://github.com/alaincc/FLUKELOAD">FLUKELOAD</a>
+        ·
+        Theme:
+        <label><input type="radio" name="theme" value="auto" id="theme-auto"> auto</label>
+        <label><input type="radio" name="theme" value="light" id="theme-light"> light</label>
+        <label><input type="radio" name="theme" value="dark" id="theme-dark"> dark</label>
       </small>
     </footer>
   </main>
