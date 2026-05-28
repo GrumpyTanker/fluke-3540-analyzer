@@ -9,6 +9,9 @@ import { downloadBundleZip } from './bundle_export.js';
 import { looksLikeFel, unpackFel } from './fel.js';
 import { downloadHtmlReport } from './html_report.js';
 import { analyzeInsights } from './insights.js';
+import {
+  rangeFromHash, rangeToHash, renderRangeSelector, scopeRecordsToRange,
+} from './range_select.js';
 
 // Try sibling first (e.g. when the Pages deploy flattens spec/ next to app.js),
 // then fall back to ../spec/ for serving from the repo root.
@@ -56,6 +59,8 @@ const els = {
   insightsSec:        document.getElementById('insights-section'),
   insightsStatus:     document.getElementById('insights-status'),
   insightsList:       document.getElementById('insights-list'),
+  rangeSec:           document.getElementById('range-section'),
+  rangeContainer:     document.getElementById('range-container'),
   exportSec:          document.getElementById('export-section'),
   exportXlsxBtn:      document.getElementById('export-xlsx-btn'),
   exportHtmlBtn:      document.getElementById('export-html-btn'),
@@ -71,6 +76,8 @@ let currentTimeRangeMs = null;
 let currentEvents = [];       // detected events for currentRecords
 let currentSnapshots = [];    // picked snapshots for currentRecords
 let currentFindings = [];     // insights for currentRecords
+let currentRange = null;      // {startMs, endMs} or null = whole session
+let rangeSelector = null;     // the renderRangeSelector handle
 let currentWorker = null;
 
 // --- Spec lazy-load ---------------------------------------------------------
@@ -240,6 +247,8 @@ async function onParseDone(msg) {
     els.snapshotsSec.hidden = currentSnapshots.length === 0;
     els.controlsSec.hidden = false;
     els.exportSec.hidden = false;
+    els.rangeSec.hidden = false;
+    setupRangeSelector(spec);
   } catch (e) {
     showError(e);
     return;
@@ -326,8 +335,29 @@ function resetUi() {
   els.controlsSec.hidden = true;
   els.chartsSec.hidden = true;
   els.exportSec.hidden = true;
+  els.rangeSec.hidden = true;
+  if (rangeSelector) { rangeSelector.destroy(); rangeSelector = null; }
+  currentRange = null;
   els.fileInput.value = '';
   els.dirInput.value = '';
+}
+
+function setupRangeSelector(spec) {
+  if (rangeSelector) rangeSelector.destroy();
+  rangeSelector = renderRangeSelector(
+    els.rangeContainer, currentRecords, spec, (range) => {
+      currentRange = range;
+      const hash = rangeToHash(range);
+      if (hash) history.replaceState(null, '', hash);
+      else history.replaceState(null, '', location.pathname + location.search);
+    }
+  );
+  // Restore from URL hash if present
+  const hashRange = rangeFromHash(location.hash);
+  if (hashRange) {
+    currentRange = hashRange;
+    rangeSelector.setRange(hashRange);
+  }
 }
 
 function renderInsights() {
@@ -399,17 +429,20 @@ function scrollToEvent(eventId) {
 async function exportXlsx() {
   if (!currentRecords) return;
   const spec = await getSpec();
-  const blob = buildXlsx({ records: currentRecords, spec, config: currentConfig });
+  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const blob = buildXlsx({ records: scoped, spec, config: currentConfig });
   const name = (currentConfig?.asset_name ?? 'fluke_session').replace(/[^a-zA-Z0-9._-]+/g, '_');
-  downloadBlob(blob, `${name}_report.xlsx`);
+  const suffix = currentRange ? '_range' : '';
+  downloadBlob(blob, `${name}${suffix}_report.xlsx`);
 }
 
 async function exportBundle() {
   if (!currentRecords) return;
   const spec = await getSpec();
-  const xlsxBlob = buildXlsx({ records: currentRecords, spec, config: currentConfig });
+  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const xlsxBlob = buildXlsx({ records: scoped, spec, config: currentConfig });
   await downloadBundleZip({
-    records: currentRecords, spec, xlsxBlob,
+    records: scoped, spec, xlsxBlob,
     assetName: currentConfig?.asset_name,
   });
 }
@@ -417,11 +450,21 @@ async function exportBundle() {
 async function exportHtmlReport() {
   if (!currentRecords) return;
   const spec = await getSpec();
-  const title = `Fluke 3540 FC — ${currentConfig?.asset_name ?? 'Session'} Report`;
+  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  // When scoping, also scope events/findings to overlap the range.
+  const scopedEvents = currentRange
+    ? currentEvents.filter((e) =>
+        !(e.tEndMs < currentRange.startMs || e.tStartMs > currentRange.endMs))
+    : currentEvents;
+  const scopedFindings = currentRange ? [] : currentFindings;  // insights are session-scoped
+  const rangeSuffix = currentRange
+    ? ` (range ${new Date(currentRange.startMs).toISOString().slice(11, 19)}-${new Date(currentRange.endMs).toISOString().slice(11, 19)})`
+    : '';
+  const title = `Fluke 3540 FC — ${currentConfig?.asset_name ?? 'Session'} Report${rangeSuffix}`;
   downloadHtmlReport({
-    title, config: currentConfig, records: currentRecords, spec,
-    events: currentEvents, snapshots: currentSnapshots,
-    findings: currentFindings,
+    title, config: currentConfig, records: scoped, spec,
+    events: scopedEvents, snapshots: currentSnapshots,
+    findings: scopedFindings,
   });
 }
 
@@ -465,10 +508,32 @@ function renderEventsTable() {
     tr.appendChild(td(`${durSec}s`));
     tr.appendChild(td((ev.affectedPhases ?? []).join('/') || '—'));
     tr.appendChild(td(ev.severity.toFixed(3)));
+    // Snap-to-event button — sets the global range to this event ± 60s.
+    const actionCell = document.createElement('td');
+    const snap = document.createElement('button');
+    snap.type = 'button';
+    snap.className = 'snap-btn';
+    snap.textContent = '⤓ snap';
+    snap.title = 'Snap the range selector to this event ±60s';
+    snap.addEventListener('click', () => snapRangeToEvent(ev));
+    actionCell.appendChild(snap);
+    tr.appendChild(actionCell);
     els.eventsTbody.appendChild(tr);
   }
   renderKindChips();
   applyEventsFilter();
+}
+
+function snapRangeToEvent(ev) {
+  const padMs = 60_000;
+  const range = {
+    startMs: ev.tStartMs - padMs,
+    endMs: ev.tEndMs + padMs,
+  };
+  currentRange = range;
+  rangeSelector?.setRange(range);
+  history.replaceState(null, '', rangeToHash(range));
+  els.rangeSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderKindChips() {
@@ -585,9 +650,12 @@ async function renderAll() {
   els.eventCharts.replaceChildren();
   els.snapshotCharts.replaceChildren();
 
-  // Full-session charts
+  // Full-session charts — scoped to current range if one is set.
+  const fullOpts = currentRange
+    ? { startMs: currentRange.startMs, endMs: currentRange.endMs }
+    : {};
   for (const q of quantities) {
-    renderChart(els.fullCharts, currentRecords, spec, q, FULL_QUANTITIES);
+    renderChart(els.fullCharts, currentRecords, spec, q, FULL_QUANTITIES, fullOpts);
   }
 
   // Event zooms — only quantities that exist in ZOOM_QUANTITIES

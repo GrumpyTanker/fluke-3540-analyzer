@@ -58,6 +58,23 @@ pre.error {
   word-break: break-word;
 }
 
+/* Range selector */
+.range-label { font-size: 0.9rem; margin-bottom: 0.3rem; }
+.range-label button { margin: 0; padding: 0.2rem 0.6rem; font-size: 0.8rem; }
+.range-strip { width: 100%; min-height: 90px; }
+
+/* Snap-to-event button on each event row */
+.snap-btn {
+  background: none;
+  border: 1px solid var(--pico-muted-border-color, #aaa);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  margin: 0;
+}
+.snap-btn:hover { background: rgba(0, 0, 0, 0.04); }
+
 /* Insights cards */
 .insights-list { display: flex; flex-direction: column; gap: 0.6rem; }
 .insight-card {
