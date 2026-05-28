@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-05-28
+
+### Added
+- **CSV input mode** — drop a pre-parsed `session.csv` instead of the
+  binary; the CLI accepts the same `.csv` as a session input.
+- **Multi-session web compare UI** — load multiple files into one
+  page, label each, toggle Compare overlay for side-by-side analysis.
+- **Cross-session insights** — voltage_drift, recurring_outages,
+  pf_degradation, source_stiffness_emergence, event_count_trend.
+  Python + JS parity, thresholds in `spec/field_map.json`.
+- **Compare HTML + PDF reports** — CLI compare writes
+  `compare_report.html` (+ `compare_report.pdf` with `--pdf`); web
+  compare mode reuses the existing Download HTML button.
+- **Energy cost / TOU tariff calculator** — currency + peak/off-peak
+  rates + peak hours, persisted per asset in `localStorage`. See
+  [`docs/TARIFF.md`](docs/TARIFF.md).
+- **Per-event annotations** — 📝 button on each event row, notes
+  persist in `localStorage` keyed by file hash + event id, exportable
+  as JSON.
+- **Breaker context inputs** — main breaker rating drives a richer
+  `current_spike_ratio` finding (% of rating, escalating severity)
+  plus a new `breaker_margin` alert when peak exceeds rating.
+- **Anomaly band tooltips** on hover over the colored event regions.
+- **PWA / installable web app** — `manifest.json` + service worker,
+  cache-first for offline use.
+- **Mobile responsive layout** — events table scrolls horizontally,
+  chart toolbars stack, range mini-map supports touch.
+- **Crosshair tooltips** — uPlot legend.live readouts with wider
+  cursor proximity for easier hover sampling.
+
+### Tests
+- 109 Python tests (up from 89 in v0.3.0)
+- 76 JS tests (up from 39 in v0.3.0)
+- **185 total** — all green in CI.
+
 ## [0.3.0] — 2026-05-28
 
 ### Added
@@ -112,6 +147,7 @@ First public release.
 - CI on every PR (pytest + node --test); GitHub Pages auto-deploy.
 - MIT license, credits FLUKELOAD upstream.
 
+[0.4.0]: https://github.com/GrumpyTanker/fluke-3540-analyzer/releases/tag/v0.4.0
 [0.3.0]: https://github.com/GrumpyTanker/fluke-3540-analyzer/releases/tag/v0.3.0
 [0.2.0]: https://github.com/GrumpyTanker/fluke-3540-analyzer/releases/tag/v0.2.0
 [0.1.0]: https://github.com/GrumpyTanker/fluke-3540-analyzer/releases/tag/v0.1.0

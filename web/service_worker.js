@@ -1,7 +1,7 @@
 // Service worker — cache-first for static assets. Versioned by the
 // CACHE name so a bump invalidates the old cache automatically.
 
-const CACHE = 'fluke3540-v0.4.0';
+const CACHE = 'fluke3540-v0.4.0';  // bump on every release to invalidate
 const ASSETS = [
   './',
   './index.html',
