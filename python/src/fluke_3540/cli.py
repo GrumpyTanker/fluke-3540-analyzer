@@ -363,6 +363,12 @@ def _emit_json(events: Sequence[Event], snaps: Sequence[Snapshot],
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Subcommand dispatch — `fluke-analyze compare ...` routes to cli_compare.
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] == "compare":
+        from .cli_compare import compare_main
+        return compare_main(raw_argv[1:])
+
     # Make console output UTF-8 safe on Windows (default cp1252 chokes on →, σ, etc.)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
