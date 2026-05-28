@@ -20,17 +20,21 @@ This project gives you:
 
 Visit **[grumpytanker.github.io/fluke-3540-analyzer](https://grumpytanker.github.io/fluke-3540-analyzer/)** and drop your `trend.bin` (or the whole unpacked `ES.NNN/` session folder, so the asset name from `ES.NNN-config.json` is picked up too) onto the page.
 
-The browser parses the file locally in a Web Worker, runs event detection, and shows:
+The browser parses the file locally in a Web Worker, runs event detection + insights analysis, and shows:
 
 - A summary panel (records, time range, asset)
-- An events table with severity, affected phases, and one-click zoom
+- An **Insights** section with severity-colored cards explaining what was found and what to do about it (see [`docs/INSIGHTS.md`](docs/INSIGHTS.md))
+- An events table with severity, affected phases, search/filter, sortable columns, and one-click zoom
 - A snapshots list of quiet baseline windows
+- A **range select** mini-map — brush-drag to scope every chart and export to a time window
+- Charts with anomaly bands, drag-to-box-zoom, wheel zoom, Shift-drag pan
 - A chart picker (voltage / current / power / PF / frequency / THD)
-- A pre/post-event zoom window control
 - Per-chart download to PNG or CSV
-- A full workbook download (XLSX) and "Download everything (.zip)" bundle
+- Full workbook (XLSX), self-contained HTML report, **PDF report**, and "Download everything (.zip)" bundle
+- IndexedDB caching: drop the same file twice → second time skips the parse
+- Keyboard shortcuts (press `?` to see them) and a dark mode toggle in the footer
 
-**No data ever leaves your machine.** Verify yourself in DevTools → Network: zero outbound requests after page load.
+**No data ever leaves your machine.** Verify yourself in DevTools → Network: zero outbound requests after page load. The Insights engine is local + rule-based — no cloud LLM, no API key.
 
 ## Python CLI — for scripting + publication charts
 
@@ -87,9 +91,10 @@ fluke-analyze path/to/ES.NNN -o output/ \
 | `--format` | `png` | `png` or `svg` |
 | `--no-xlsx` | | Skip the XLSX workbook |
 | `--no-html` | | Skip the self-contained HTML report (default writes `report.html`) |
+| `--pdf` | | Also write `report.pdf` (requires `pip install fluke-3540-analyzer[pdf]`) |
 | `--no-overview` | | Skip the 2x2 overview multiplot |
 | `--nominal-ln-v V` | auto | Override nominal L-N voltage (auto-inferred otherwise) |
-| `--json` | | Emit a single JSON blob to stdout (no charts, no logs). |
+| `--json` | | Emit a single JSON blob to stdout (no charts, no logs). Includes an `insights` array. |
 
 ### Output layout (`--auto`)
 
