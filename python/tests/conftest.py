@@ -1,4 +1,4 @@
-"""Shared pytest fixtures — most importantly the synthetic trend.bin builder."""
+"""Shared pytest fixtures and synthetic-data helpers."""
 from __future__ import annotations
 
 import datetime as dt
@@ -9,11 +9,17 @@ import pytest
 
 from fluke_3540.parser import (
     DATA_FLOATS,
+    FIELDS,
     FILETIME_EPOCH,
     HEADER_BYTES,
     RECORD_MAGIC,
     RECORD_SIZE,
+    Record,
 )
+
+
+# Field-name → float-index lookup for use in tests that build synthetic Records.
+FIELD_INDEX = {f.name: f.index for f in FIELDS}
 
 
 # 2024-01-13 22:00:00 UTC — convenient round timestamp for the synthetic fixture.
@@ -77,3 +83,68 @@ def synthetic_session_dir(tmp_path_factory, synthetic_trend_path: Path) -> Path:
     d = tmp_path_factory.mktemp("ES.SYN")
     (d / "trend.bin").write_bytes(synthetic_trend_path.read_bytes())
     return d
+
+
+# --- Per-second Record builder for event-detection tests ---------------------
+
+def make_records(
+    count: int,
+    base: dt.datetime = SYNTHETIC_BASE,
+    overrides: dict[int, dict[str, float]] | None = None,
+    defaults: dict[str, float] | None = None,
+) -> list[Record]:
+    """Build a list of in-memory Record objects for tests.
+
+    Every field defaults to whatever's in `defaults` (or 0.0 if absent).
+    `overrides[record_index][field_name] = value` injects per-record overrides.
+
+    The defaults mirror a healthy 277 V_LN / 60 Hz / 100A / 50 kW load:
+        V_LN_*_{min,max,avg}_V = 277
+        V_LL_*_{min,max,avg}_V = 480
+        I_*_{min,max,avg}_A    = 100
+        freq_*_Hz              = 60.0
+        P_total_avg_W          = 50_000
+    """
+    overrides = overrides or {}
+    base_values = {
+        **{f.name: 0.0 for f in FIELDS},
+        # voltage L-N defaults
+        **{f"V_LN_{ph}_{st}_V": 277.0
+           for ph in ("a", "b", "c") for st in ("min", "max", "avg")},
+        # voltage L-L defaults
+        **{f"V_LL_{pair}_{st}_V": 480.0
+           for pair in ("ab", "bc", "ca") for st in ("min", "max", "avg")},
+        # current defaults
+        **{f"I_{ph}_{st}_A": 100.0
+           for ph in ("a", "b", "c") for st in ("min", "max", "avg")},
+        # frequency
+        "freq_min_Hz": 60.0, "freq_max_Hz": 60.0, "freq_avg_Hz": 60.0,
+        # power
+        "P_total_avg_W": 50_000.0, "P_total_min_W": 50_000.0, "P_total_max_W": 50_000.0,
+    }
+    if defaults:
+        base_values.update(defaults)
+
+    records: list[Record] = []
+    for n in range(count):
+        per_field = dict(base_values)
+        if n in overrides:
+            per_field.update(overrides[n])
+        floats = [0.0] * DATA_FLOATS
+        for name, val in per_field.items():
+            if name in FIELD_INDEX:
+                floats[FIELD_INDEX[name]] = val
+        records.append(Record(
+            index=n,
+            start=base + dt.timedelta(seconds=n),
+            end=base + dt.timedelta(seconds=n + 1),
+            floats=tuple(floats),
+        ))
+    return records
+
+
+def plant_window(overrides: dict[int, dict[str, float]],
+                 start: int, end: int, values: dict[str, float]) -> None:
+    """Inject the same field values across records [start, end] inclusive."""
+    for i in range(start, end + 1):
+        overrides.setdefault(i, {}).update(values)
