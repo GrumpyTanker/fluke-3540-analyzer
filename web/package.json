@@ -1,0 +1,10 @@
+{
+  "name": "fluke-3540-analyzer-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser parser/charter for Fluke 3540 FC trend.bin sessions. Pure ES modules — no build, no bundler.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}
