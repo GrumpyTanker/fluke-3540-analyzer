@@ -188,6 +188,47 @@ def iter_records(path: Path) -> Iterator[Record]:
             index += 1
 
 
+def from_csv(path: Path) -> Iterator[Record]:
+    """Yield Record objects reconstructed from a previously-exported session CSV.
+
+    The CSV must have ``timestamp_utc`` (ISO-8601), ``window_end_utc``, and
+    any subset of the field-map column names. Missing or unparseable cells
+    become 0.0. Useful for re-analysing a session whose binary you no longer
+    have, or for sharing a parsed session as a single text file.
+    """
+    name_to_idx = {f.name: f.index for f in FIELDS}
+    with path.open("r", newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for n, row in enumerate(reader):
+            try:
+                start = dt.datetime.fromisoformat(row["timestamp_utc"])
+            except (KeyError, ValueError):
+                continue
+            try:
+                end = dt.datetime.fromisoformat(row["window_end_utc"])
+            except (KeyError, ValueError):
+                end = start + dt.timedelta(seconds=1)
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=dt.timezone.utc)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=dt.timezone.utc)
+            floats = [0.0] * DATA_FLOATS
+            for col, val in row.items():
+                idx = name_to_idx.get(col)
+                if idx is None or val == "":
+                    continue
+                try:
+                    floats[idx] = float(val)
+                except ValueError:
+                    pass
+            yield Record(
+                index=n,
+                start=start,
+                end=end,
+                floats=tuple(floats),
+            )
+
+
 def find_session_files(session_dir: Path) -> dict:
     """Locate the well-known files inside an ES.NNN/ directory.
 

@@ -7,6 +7,7 @@ import { FULL_QUANTITIES, ZOOM_QUANTITIES, renderChart } from './plots.js';
 import { buildXlsx, downloadBlob } from './xlsx_export.js';
 import { downloadBundleZip } from './bundle_export.js';
 import { looksLikeFel, unpackFel } from './fel.js';
+import { looksLikeCsv, parseCsvBuffer } from './csv_input.js';
 import { downloadHtmlReport } from './html_report.js';
 import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
@@ -115,6 +116,13 @@ function findInFileList(files, predicate) {
 async function handleFiles(fileList) {
   if (!fileList || fileList.length === 0) return;
 
+  // 0) Pre-parsed CSV — fastest path, skips the binary parser entirely.
+  const csvFile = findInFileList(fileList, looksLikeCsv);
+  if (csvFile) {
+    await handleCsvFile(csvFile);
+    return;
+  }
+
   // 1) If any dropped file is a .fel, unpack in memory and use that.
   const felFile = findInFileList(fileList, looksLikeFel);
   if (felFile) {
@@ -163,6 +171,23 @@ async function handleFelFile(file) {
     currentConfig = config;
     currentArrayBuffer = trendBuffer;
     await parseBuffer();
+  } catch (e) {
+    showError(e);
+  }
+}
+
+async function handleCsvFile(file) {
+  hideError();
+  els.summarySec.hidden = true;
+  els.progressSec.hidden = false;
+  setProgress(0, 100, 'reading CSV');
+  try {
+    const ab = await file.arrayBuffer();
+    const spec = await getSpec();
+    const { records } = parseCsvBuffer(ab, spec);
+    // CSV input has no companion config (unlike .fel/folder); keep currentConfig as-is.
+    currentArrayBuffer = null;  // no binary to cache or re-parse
+    await onParseDone({ records, recordCount: records.length });
   } catch (e) {
     showError(e);
   }

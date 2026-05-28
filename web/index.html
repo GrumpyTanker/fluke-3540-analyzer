@@ -24,11 +24,11 @@
     <section id="drop-zone" class="drop-zone" aria-label="File drop zone">
       <div class="drop-zone-inner">
         <p class="drop-icon" aria-hidden="true">⬇</p>
-        <p><strong>Drop a <code>trend.bin</code>, a <code>.fel</code> bundle, or the whole <code>ES.NNN/</code> folder</strong> here<br>
-          (so the asset-name from <code>ES.NNN-config.json</code> is picked up too).</p>
+        <p><strong>Drop a <code>trend.bin</code>, a <code>.fel</code> bundle, an <code>ES.NNN/</code> folder, or a pre-parsed <code>session.csv</code></strong><br>
+          (the binary or .fel gives you the full pipeline; CSV input skips the parser and analyses an existing export).</p>
         <p>
           <label for="file-input" role="button" class="secondary outline">Browse for file&hellip;</label>
-          <input type="file" id="file-input" accept=".bin,.fel,application/octet-stream,application/zip" hidden>
+          <input type="file" id="file-input" accept=".bin,.fel,.csv,application/octet-stream,application/zip,text/csv" hidden>
           <label for="dir-input" role="button" class="secondary outline">Pick session folder&hellip;</label>
           <input type="file" id="dir-input" webkitdirectory directory multiple hidden>
         </p>

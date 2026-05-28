@@ -16,10 +16,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable, Sequence
 
+import csv as _csv
+
 from .events import Event, detect_events
 from .insights import Finding, analyze as analyze_insights, to_jsonable as finding_to_jsonable
 from .parser import (
-    _parse_reverse_cts_arg, export_csv, find_session_files, iter_records,
+    _parse_reverse_cts_arg, export_csv, find_session_files, from_csv, iter_records,
     open_session,
 )
 from .plots import (
@@ -82,7 +84,8 @@ def build_argparser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("session_dir", type=Path,
-                    help="Path to an ES.NNN session directory OR a .fel zip-bundle")
+                    help="Path to an ES.NNN session directory, a .fel zip-bundle, "
+                         "or a pre-parsed session.csv")
     ap.add_argument("-o", "--output", type=Path, default=None,
                     help="Output directory (default: <session>_out next to the session)")
 
@@ -146,13 +149,51 @@ def build_argparser() -> argparse.ArgumentParser:
     return ap
 
 
+def _is_csv_input(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() == ".csv"
+
+
 def _resolve_outdir(args: argparse.Namespace) -> Path:
     if args.output:
         return args.output
     name = args.session_dir.name
-    if name.lower().endswith(".fel"):
-        name = name[:-4]
+    for suf in (".fel", ".csv"):
+        if name.lower().endswith(suf):
+            name = name[:-len(suf)]
+            break
     return args.session_dir.parent / (name + "_out")
+
+
+def _downsample_csv(src: Path, dst: Path, every: int) -> int:
+    """Write a CSV containing only every Nth data row from src; header preserved."""
+    if every <= 1:
+        dst.write_bytes(src.read_bytes())
+        return -1
+    rows = 0
+    with src.open("r", newline="", encoding="utf-8") as inp, \
+         dst.open("w", newline="", encoding="utf-8") as out:
+        reader = _csv.reader(inp)
+        writer = _csv.writer(out)
+        header = next(reader, None)
+        if header is not None:
+            writer.writerow(header)
+        for i, row in enumerate(reader):
+            if i % every == 0:
+                writer.writerow(row)
+                rows += 1
+    return rows
+
+
+def _parse_csv_session(args: argparse.Namespace, outdir: Path,
+                      ) -> tuple[Path, Path, dict]:
+    """CSV-input replacement for _parse_session: copies + downsamples."""
+    full_csv = outdir / "session.csv"
+    min_csv = outdir / "session_1min.csv"
+    if args.session_dir.resolve() != full_csv.resolve():
+        full_csv.write_bytes(args.session_dir.read_bytes())
+    print(f"[csv-in] {args.session_dir}  →  {full_csv}")
+    _downsample_csv(full_csv, min_csv, every=max(60, args.every))
+    return full_csv, min_csv, {}  # config unavailable for CSV input
 
 
 def _parse_session(args: argparse.Namespace, outdir: Path,
@@ -176,12 +217,20 @@ def _parse_session(args: argparse.Namespace, outdir: Path,
 
 
 def _detect_and_save(args: argparse.Namespace, outdir: Path,
-                     trend_path: Path,
+                     trend_path: Path | None,
                      config: dict | None = None,
+                     *,
+                     csv_path: Path | None = None,
                      ) -> tuple[list[Event], list[Snapshot], list[Finding]]:
-    """Phase 1B: run event + snapshot + insights detection, write JSON."""
+    """Phase 1B: run event + snapshot + insights detection, write JSON.
+
+    Pass either trend_path (binary input) or csv_path (CSV input).
+    """
     print("[detect] running event scan…")
-    recs = list(iter_records(trend_path))
+    if csv_path is not None:
+        recs = list(from_csv(csv_path))
+    else:
+        recs = list(iter_records(trend_path))
     if args.from_time or args.to_time:
         before = len(recs)
         recs = [
@@ -439,9 +488,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.session_dir.exists():
         print(f"ERROR: {args.session_dir} does not exist", file=sys.stderr)
         return 1
-    if not (args.session_dir.is_dir() or
-            (args.session_dir.is_file() and args.session_dir.suffix.lower() == ".fel")):
-        print(f"ERROR: {args.session_dir} is neither a directory nor a .fel file",
+    if not (args.session_dir.is_dir()
+            or (args.session_dir.is_file()
+                and args.session_dir.suffix.lower() in (".fel", ".csv"))):
+        print(f"ERROR: {args.session_dir} is not a directory, a .fel, or a .csv",
               file=sys.stderr)
         return 1
 
@@ -454,12 +504,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render_phase(args, outdir, full_csv, min_csv, events, snaps, config)
             return 0
 
-        # Phase 1: parse + detect (open_session transparently unpacks .fel)
-        with open_session(args.session_dir) as session_dir:
-            full_csv, min_csv, config = _parse_session(args, outdir, session_dir)
-            trend = find_session_files(session_dir)["trend"]
-            events, snaps, findings = _detect_and_save(args, outdir, trend, config)
+        # Phase 1: parse + detect (open_session transparently unpacks .fel;
+        # CSV inputs skip the binary parse entirely).
+        if _is_csv_input(args.session_dir):
+            full_csv, min_csv, config = _parse_csv_session(args, outdir)
+            events, snaps, findings = _detect_and_save(
+                args, outdir, trend_path=None, config=config, csv_path=full_csv,
+            )
             _write_summary_txt(outdir, events, snaps, findings, config)
+        else:
+            with open_session(args.session_dir) as session_dir:
+                full_csv, min_csv, config = _parse_session(args, outdir, session_dir)
+                trend = find_session_files(session_dir)["trend"]
+                events, snaps, findings = _detect_and_save(args, outdir, trend, config)
+                _write_summary_txt(outdir, events, snaps, findings, config)
 
         if getattr(args, "json_mode", False):
             _emit_json(events, snaps, findings, config)
