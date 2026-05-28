@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fluke-3540-analyzer"
+version = "0.1.0.dev0"
+description = "Parser, event detector, and chart generator for Fluke 3540 FC three-phase power-quality sessions. See https://github.com/GrumpyTanker/fluke-3540-analyzer."
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "GrumpyTanker"}]
+keywords = ["fluke", "3540", "power-quality", "trend.bin", "energy-analyze"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "openpyxl >= 3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest >= 7.0",
+]
+
+[project.scripts]
+fluke-analyze = "fluke_3540.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/GrumpyTanker/fluke-3540-analyzer"
+Repository = "https://github.com/GrumpyTanker/fluke-3540-analyzer"
+Issues = "https://github.com/GrumpyTanker/fluke-3540-analyzer/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
