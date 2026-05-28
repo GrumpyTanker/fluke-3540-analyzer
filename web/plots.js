@@ -197,7 +197,7 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
       { stroke: '#666' },
       { stroke: '#666', label: def.ylabel },
     ],
-    cursor: { drag: { x: true, y: false, setScale: true }, focus: { prox: 8 } },
+    cursor: { drag: { x: true, y: false, setScale: true }, focus: { prox: 30 } },
     legend: { live: true },
     hooks: eventBands && eventBands.length ? {
       drawClear: [(u) => drawEventBands(u, eventBands)],
@@ -213,6 +213,9 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
 
   attachZoomOnScroll(plot, chartDiv);
   attachShiftDragPan(plot, chartDiv);
+  if (eventBands && eventBands.length) {
+    attachBandTooltips(plot, chartDiv, eventBands);
+  }
 
   // Toolbar handlers
   dlPng.addEventListener('click', () => downloadChartPng(plot, def.title));
@@ -225,6 +228,37 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
   });
 
   return { plot, container: wrapper, data, def };
+}
+
+function attachBandTooltips(plot, chartDiv, eventBands) {
+  let tip = null;
+  function showTip(ev, text) {
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'anomaly-tooltip';
+      chartDiv.appendChild(tip);
+    }
+    tip.textContent = text;
+    tip.style.left = (ev.offsetX + 12) + 'px';
+    tip.style.top = (ev.offsetY + 12) + 'px';
+    tip.hidden = false;
+  }
+  function hideTip() { if (tip) tip.hidden = true; }
+  chartDiv.addEventListener('pointermove', (e) => {
+    if (!plot.over) return;
+    const rect = plot.over.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    if (px < 0 || px > rect.width) { hideTip(); return; }
+    const tSec = plot.posToVal(px, 'x');
+    if (!Number.isFinite(tSec)) { hideTip(); return; }
+    const tMs = tSec * 1000;
+    const hits = eventBands.filter((b) => tMs >= b.tStartMs && tMs <= b.tEndMs);
+    if (hits.length === 0) { hideTip(); return; }
+    const ev = hits[0];
+    const dur = Math.max(1, Math.round((ev.tEndMs - ev.tStartMs) / 1000));
+    showTip(e, `${ev.kind} #${ev.id} · ${dur}s · sev ${ev.severity.toFixed(3)}`);
+  });
+  chartDiv.addEventListener('pointerleave', hideTip);
 }
 
 function drawEventBands(u, eventBands) {

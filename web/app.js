@@ -1401,5 +1401,15 @@ document.getElementById('clear-cache-link')?.addEventListener('click', async (e)
   setTimeout(() => { e.target.textContent = 'Clear cache'; }, 2000);
 });
 
+// PWA service worker registration — skipped on localhost to avoid
+// stale-cache confusion during dev.
+if ('serviceWorker' in navigator
+    && !['localhost', '127.0.0.1'].includes(location.hostname)) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service_worker.js')
+      .catch((e) => console.warn('SW registration failed:', e));
+  });
+}
+
 // Prefetch the spec so first-drop is snappy.
 getSpec().catch(() => {/* surface only when actually parsing */});

@@ -282,4 +282,38 @@ pre.error {
 .chart-canvas {
   width: 100%;
   min-height: 280px;
+  position: relative;
+}
+
+/* P2: anomaly band tooltip */
+.anomaly-tooltip {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.85);
+  color: #fff;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  font-family: monospace;
+  pointer-events: none;
+  z-index: 10;
+  white-space: nowrap;
+}
+
+/* P4: uPlot legend / crosshair styling (dark-mode safe) */
+.u-legend { font-size: 0.85rem; }
+[data-theme="dark"] .u-legend { color: #ddd; }
+[data-theme="dark"] .u-tooltip,
+[data-theme="dark"] .u-cursor-pt { color: #ddd; }
+
+/* P3: mobile responsive */
+@media (max-width: 600px) {
+  main.container { padding: 0 0.5rem; margin-top: 1rem; }
+  .summary-grid { grid-template-columns: 1fr; gap: 0.2rem 0; }
+  .summary-grid dt { margin-top: 0.4rem; }
+  .events-table { display: block; overflow-x: auto; white-space: nowrap; }
+  .chart-header { flex-direction: column; align-items: flex-start; }
+  .chart-toolbar { flex-wrap: wrap; }
+  .events-toolbar { flex-direction: column; align-items: stretch; }
+  .range-strip { touch-action: pan-x; user-select: none; }
+  .sessions-bar { flex-direction: column; align-items: stretch; }
 }
