@@ -60,6 +60,18 @@
     "L": "Weak inference \u2014 likely interpretation but not verified.",
     "?": "Unknown \u2014 payload is present but role is not yet identified."
   },
+  "insight_rules": {
+    "outage_dip_window_secs": 30,
+    "phase_asymmetry_pct": 2.0,
+    "pf_drift_threshold": 0.85,
+    "pf_drift_min_fraction": 0.10,
+    "imbalance_sustained_pct": 1.5,
+    "imbalance_sustained_secs": 60,
+    "freq_stiffness_hz": 0.05,
+    "freq_stiffness_min_count": 3,
+    "outage_frequency_per_day": 1.0,
+    "current_to_mean_ratio_alert": 5.0
+  },
   "fields": [
     {
       "index": 0,
