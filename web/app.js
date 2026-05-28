@@ -8,6 +8,7 @@ import { buildXlsx, downloadBlob } from './xlsx_export.js';
 import { downloadBundleZip } from './bundle_export.js';
 import { looksLikeFel, unpackFel } from './fel.js';
 import { downloadHtmlReport } from './html_report.js';
+import { downloadPdfReport } from './pdf_export.js';
 import { analyzeInsights } from './insights.js';
 import {
   rangeFromHash, rangeToHash, renderRangeSelector, scopeRecordsToRange,
@@ -64,6 +65,7 @@ const els = {
   exportSec:          document.getElementById('export-section'),
   exportXlsxBtn:      document.getElementById('export-xlsx-btn'),
   exportHtmlBtn:      document.getElementById('export-html-btn'),
+  exportPdfBtn:       document.getElementById('export-pdf-btn'),
   exportBundleBtn:    document.getElementById('export-bundle-btn'),
 };
 
@@ -447,6 +449,25 @@ async function exportBundle() {
   });
 }
 
+async function exportPdf() {
+  if (!currentRecords) return;
+  const spec = await getSpec();
+  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const scopedEvents = currentRange
+    ? currentEvents.filter((e) =>
+        !(e.tEndMs < currentRange.startMs || e.tStartMs > currentRange.endMs))
+    : currentEvents;
+  const rangeSuffix = currentRange
+    ? ` (range ${new Date(currentRange.startMs).toISOString().slice(11, 19)}-${new Date(currentRange.endMs).toISOString().slice(11, 19)})`
+    : '';
+  const title = `Fluke 3540 FC — ${currentConfig?.asset_name ?? 'Session'} Report${rangeSuffix}`;
+  await downloadPdfReport({
+    title, config: currentConfig, records: scoped, spec,
+    events: scopedEvents, snapshots: currentSnapshots,
+    findings: currentRange ? [] : currentFindings,
+  });
+}
+
 async function exportHtmlReport() {
   if (!currentRecords) return;
   const spec = await getSpec();
@@ -784,6 +805,7 @@ els.eventsClearFilters?.addEventListener('click', () => {
 els.renderBtn.addEventListener('click', () => renderAll().catch(showError));
 els.exportXlsxBtn.addEventListener('click', () => exportXlsx().catch(showError));
 els.exportHtmlBtn.addEventListener('click', () => exportHtmlReport().catch(showError));
+els.exportPdfBtn.addEventListener('click', () => exportPdf().catch(showError));
 els.exportBundleBtn.addEventListener('click', () => exportBundle().catch(showError));
 
 // --- Theme (light / dark / auto) -------------------------------------------
