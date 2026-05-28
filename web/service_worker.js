@@ -1,7 +1,7 @@
 // Service worker — cache-first for static assets. Versioned by the
 // CACHE name so a bump invalidates the old cache automatically.
 
-const CACHE = 'fluke3540-v0.4.0';  // bump on every release to invalidate
+const CACHE = 'fluke3540-v0.4.1';  // bump on every release to invalidate
 const ASSETS = [
   './',
   './index.html',
@@ -60,21 +60,42 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
-  // Only handle same-origin GETs — never intercept user file uploads / external requests.
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
-  event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).then((resp) => {
-        // Populate cache for runtime-fetched same-origin assets so first-load
-        // works fully offline.
+
+  // Network-first for HTML navigations and the spec JSON so a fresh deploy
+  // is picked up without users having to hard-refresh. Cache-first for
+  // everything else (vendor JS/CSS/SVG/PNG never change without a hash bump).
+  const isHtml = req.mode === 'navigate'
+    || req.destination === 'document'
+    || url.pathname.endsWith('.html')
+    || url.pathname.endsWith('/');
+  const isFreshNeeded = isHtml || url.pathname.endsWith('field_map.json');
+
+  if (isFreshNeeded) {
+    event.respondWith(
+      fetch(req).then((resp) => {
         if (resp.ok && resp.type === 'basic') {
           const copy = resp.clone();
           caches.open(CACHE).then((cache) => cache.put(req, copy));
         }
         return resp;
-      }).catch(() => cached);  // offline, no cache → undefined
+      }).catch(() => caches.match(req))   // offline fallback
+    );
+    return;
+  }
+
+  // Cache-first for static assets.
+  event.respondWith(
+    caches.match(req).then((cached) => {
+      if (cached) return cached;
+      return fetch(req).then((resp) => {
+        if (resp.ok && resp.type === 'basic') {
+          const copy = resp.clone();
+          caches.open(CACHE).then((cache) => cache.put(req, copy));
+        }
+        return resp;
+      }).catch(() => cached);
     })
   );
 });
