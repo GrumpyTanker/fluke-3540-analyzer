@@ -16,6 +16,7 @@ import {
   computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
   peakHoursToString, saveTariff,
 } from './tariff.js';
+import { exportNotesJson, getAllNotes, getNote, setNote } from './notes.js';
 import { analyzeInsights } from './insights.js';
 import { analyzeCompareInsights } from './insights_compare.js';
 import {
@@ -52,6 +53,7 @@ const els = {
   eventsSearch:       document.getElementById('events-search'),
   eventsKindChips:    document.getElementById('events-kind-chips'),
   eventsClearFilters: document.getElementById('events-clear-filters'),
+  eventsExportNotes:  document.getElementById('events-export-notes'),
   snapshotsSec:       document.getElementById('snapshots-section'),
   snapshotsList:      document.getElementById('snapshots-list'),
   controlsSec:        document.getElementById('controls-section'),
@@ -101,6 +103,7 @@ let currentSnapshots = [];    // picked snapshots for currentRecords
 let currentFindings = [];     // insights for currentRecords
 let currentRange = null;      // {startMs, endMs} or null = whole session
 let rangeSelector = null;     // the renderRangeSelector handle
+let currentFileHash = null;   // SHA-256 of the parsed file bytes (for notes)
 let currentWorker = null;
 
 // --- Spec lazy-load ---------------------------------------------------------
@@ -244,7 +247,10 @@ async function parseBuffer() {
       setProgress(100, 100, 'cache hit — skipped parse');
       // Use cached config if our companion-file lookup didn't find one
       if (!currentConfig && hit.config) currentConfig = hit.config;
-      await onParseDone({ records: hit.records, recordCount: hit.records.length, cached: true });
+      await onParseDone({
+        records: hit.records, recordCount: hit.records.length,
+        cached: true, fileHash: baseHash,
+      });
       return;
     }
   } catch (e) {
@@ -260,7 +266,7 @@ async function parseBuffer() {
     if (msg.type === 'progress') {
       setProgress(msg.done, msg.total, `parsing record ${msg.done.toLocaleString()} / ${msg.total.toLocaleString()}`);
     } else if (msg.type === 'done') {
-      onParseDone(msg).then(() => {
+      onParseDone({ ...msg, fileHash: cacheKey ? cacheKey.split(':')[0] : null }).then(() => {
         if (cacheKey && msg.records) {
           putCached(cacheKey, msg.records, currentConfig).catch(() => {});
         }
@@ -291,6 +297,7 @@ function selectedReversePhases() {
 async function onParseDone(msg) {
   currentRecords = msg.records;
   currentRecordCount = msg.recordCount;
+  currentFileHash = msg.fileHash ?? currentFileHash;
   if (msg.records.length > 0) {
     const first = msg.records[0];
     const last = msg.records[msg.records.length - 1];
@@ -788,7 +795,7 @@ function renderEventsTable() {
     tr.appendChild(td(`${durSec}s`));
     tr.appendChild(td((ev.affectedPhases ?? []).join('/') || '—'));
     tr.appendChild(td(ev.severity.toFixed(3)));
-    // Snap-to-event button — sets the global range to this event ± 60s.
+    // Snap-to-event button + note toggle in the action cell.
     const actionCell = document.createElement('td');
     const snap = document.createElement('button');
     snap.type = 'button';
@@ -797,11 +804,57 @@ function renderEventsTable() {
     snap.title = 'Snap the range selector to this event ±60s';
     snap.addEventListener('click', () => snapRangeToEvent(ev));
     actionCell.appendChild(snap);
+
+    const noteBtn = document.createElement('button');
+    noteBtn.type = 'button';
+    noteBtn.className = 'snap-btn note-btn';
+    const existingNote = getNote(currentFileHash, ev.id);
+    noteBtn.textContent = existingNote ? '📝*' : '📝';
+    noteBtn.title = existingNote ? 'Edit note (saved)' : 'Add a note';
+    noteBtn.addEventListener('click', () => toggleNoteRow(ev, tr, noteBtn));
+    actionCell.appendChild(noteBtn);
+
     tr.appendChild(actionCell);
     els.eventsTbody.appendChild(tr);
+
+    // If a note already exists, render an inline row beneath this one.
+    if (existingNote) appendNoteRow(tr, ev, noteBtn);
   }
   renderKindChips();
   applyEventsFilter();
+}
+
+function toggleNoteRow(ev, tr, noteBtn) {
+  const next = tr.nextElementSibling;
+  if (next?.classList.contains('note-row') && next.dataset.eventId === String(ev.id)) {
+    next.remove();
+    if (!getNote(currentFileHash, ev.id)) noteBtn.textContent = '📝';
+    return;
+  }
+  appendNoteRow(tr, ev, noteBtn);
+}
+
+function appendNoteRow(tr, ev, noteBtn) {
+  const row = document.createElement('tr');
+  row.className = 'note-row';
+  row.dataset.eventId = String(ev.id);
+  const cell = document.createElement('td');
+  cell.colSpan = 8;
+  const input = document.createElement('textarea');
+  input.rows = 2;
+  input.value = getNote(currentFileHash, ev.id);
+  input.placeholder = `Add a note for event #${ev.id} (e.g. "verified utility outage SR-12345")`;
+  input.style.width = '100%';
+  input.addEventListener('blur', () => {
+    const text = input.value;
+    setNote(currentFileHash, ev.id, text);
+    noteBtn.textContent = text.trim() ? '📝*' : '📝';
+    noteBtn.title = text.trim() ? 'Edit note (saved)' : 'Add a note';
+  });
+  cell.appendChild(input);
+  row.appendChild(cell);
+  tr.parentElement.insertBefore(row, tr.nextElementSibling);
+  input.focus();
 }
 
 function snapRangeToEvent(ev) {
@@ -1136,6 +1189,16 @@ for (const cb of [els.reverseA, els.reverseB, els.reverseC]) {
   });
 }
 els.resetBtn.addEventListener('click', resetUi);
+els.eventsExportNotes?.addEventListener('click', () => {
+  const json = exportNotesJson(currentFileHash, currentEvents);
+  const blob = new Blob([json], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `notes_${(currentConfig?.asset_name || 'session').replace(/[^a-zA-Z0-9._-]+/g, '_')}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+});
+
 els.tariffApplyBtn.addEventListener('click', () => {
   const t = getTariffFromForm();
   saveTariff(activeAssetName(), t);

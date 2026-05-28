@@ -188,8 +188,17 @@ pre.error {
   text-decoration: line-through;
 }
 .events-table tr.is-hidden { display: none; }
+.events-table tr.note-row td { background: rgba(255, 235, 100, 0.10); padding: 0.3rem; }
+.events-table tr.note-row textarea {
+  resize: vertical;
+  font-family: inherit;
+  font-size: 0.85rem;
+  width: 100%;
+  margin: 0;
+}
 .events-table th { user-select: none; }
 .events-table th:hover { background: rgba(0, 0, 0, 0.03); }
+.note-btn.has-note { background: rgba(255, 235, 100, 0.25); }
 
 /* Shortcuts overlay */
 #shortcuts-overlay {
