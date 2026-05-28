@@ -526,13 +526,47 @@ function formatDate(ms) {
 // Tracks which event kinds are hidden by the chip toggles.
 const hiddenKinds = new Set();
 
+// Current events-table sort: {col: 'time'|'kind'|'severity'|'id', dir: 1|-1}
+let eventsSort = { col: 'time', dir: 1 };
+
+function sortedEvents() {
+  const cmp = (a, b) => {
+    switch (eventsSort.col) {
+      case 'id':       return (a.id - b.id) * eventsSort.dir;
+      case 'kind':     return a.kind.localeCompare(b.kind) * eventsSort.dir;
+      case 'time':     return (a.tStartMs - b.tStartMs) * eventsSort.dir;
+      case 'duration': return ((a.tEndMs - a.tStartMs) - (b.tEndMs - b.tStartMs)) * eventsSort.dir;
+      case 'severity': return (Math.abs(b.severity) - Math.abs(a.severity)) * eventsSort.dir;
+      default: return 0;
+    }
+  };
+  return [...currentEvents].sort(cmp);
+}
+
 function renderEventsTable() {
   els.eventsStatus.firstChild.textContent =
     currentEvents.length === 0
       ? 'No events detected.'
       : `${currentEvents.length} event(s) detected. Tick rows to include them when you click Render.`;
+  // Re-wire the header to be sortable (idempotent — replaces handlers on each render).
+  const head = els.eventsTbody.parentElement?.querySelector('thead tr');
+  if (head) {
+    const cols = ['', 'id', 'kind', 'time', 'duration', 'phases', 'severity', ''];
+    [...head.children].forEach((th, i) => {
+      const key = cols[i];
+      if (!key) return;
+      th.style.cursor = 'pointer';
+      th.onclick = () => {
+        if (eventsSort.col === key) eventsSort.dir = -eventsSort.dir;
+        else { eventsSort.col = key; eventsSort.dir = 1; }
+        renderEventsTable();
+      };
+      const arrow = eventsSort.col === key ? (eventsSort.dir === 1 ? ' ▲' : ' ▼') : '';
+      th.textContent = th.textContent.replace(/[ ▲▼]+$/, '') + arrow;
+    });
+  }
   els.eventsTbody.replaceChildren();
-  for (const ev of currentEvents) {
+  for (const ev of sortedEvents()) {
     const tr = document.createElement('tr');
     tr.className = `kind-${ev.kind}`;
     tr.dataset.kind = ev.kind;
@@ -587,14 +621,22 @@ function snapRangeToEvent(ev) {
 
 function renderKindChips() {
   els.eventsKindChips.replaceChildren();
+  // Aggregate count and the max |severity| per kind so chips can carry
+  // a colour intensity proportional to their worst event.
   const counts = new Map();
-  for (const ev of currentEvents) counts.set(ev.kind, (counts.get(ev.kind) ?? 0) + 1);
+  const peakSev = new Map();
+  for (const ev of currentEvents) {
+    counts.set(ev.kind, (counts.get(ev.kind) ?? 0) + 1);
+    const s = Math.abs(ev.severity);
+    if (s > (peakSev.get(ev.kind) ?? 0)) peakSev.set(ev.kind, s);
+  }
   for (const [kind, n] of [...counts.entries()].sort()) {
     const chip = document.createElement('span');
     chip.className = 'kind-chip kind-' + kind;
     if (hiddenKinds.has(kind)) chip.classList.add('is-off');
     chip.textContent = `${kind} (${n})`;
-    chip.title = hiddenKinds.has(kind) ? 'Click to show' : 'Click to hide';
+    chip.title = (hiddenKinds.has(kind) ? 'Click to show. ' : 'Click to hide. ') +
+      `Peak |severity| ${(peakSev.get(kind) ?? 0).toFixed(2)}`;
     chip.addEventListener('click', () => {
       if (hiddenKinds.has(kind)) hiddenKinds.delete(kind);
       else hiddenKinds.add(kind);
@@ -863,6 +905,102 @@ document.querySelectorAll('input[name=theme]').forEach((r) => {
   });
 });
 loadTheme();
+
+// --- Keyboard shortcuts ----------------------------------------------------
+
+document.addEventListener('keydown', (e) => {
+  // Ignore when typing in inputs (so search, etc. still work normally)
+  const tag = e.target?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  switch (e.key) {
+    case 'r':
+    case 'R':
+      if (currentRecords) { e.preventDefault(); renderAll().catch(showError); }
+      break;
+    case 'z':
+    case 'Z': {
+      e.preventDefault();
+      for (const w of document.querySelectorAll('article.chart-wrapper')) {
+        w.querySelector('.chart-toolbar button')?.click();  // first toolbar btn = Reset zoom
+      }
+      break;
+    }
+    case 'ArrowLeft':
+    case 'ArrowRight':
+      navigateEvents(e.key === 'ArrowRight' ? 1 : -1);
+      break;
+    case 'Escape':
+      if (els.eventsSearch?.value) {
+        e.preventDefault();
+        els.eventsSearch.value = '';
+        hiddenKinds.clear();
+        renderKindChips();
+        applyEventsFilter();
+      } else if (currentRange) {
+        e.preventDefault();
+        rangeSelector?.setRange(null);
+        currentRange = null;
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+      break;
+    case '?':
+      e.preventDefault();
+      showShortcutsHelp();
+      break;
+  }
+});
+
+function navigateEvents(direction) {
+  if (currentEvents.length === 0) return;
+  const sorted = [...currentEvents].sort((a, b) => a.tStartMs - b.tStartMs);
+  const currentIdx = sorted.findIndex((ev) =>
+    els.eventsTbody?.querySelector(`input[data-event-id="${ev.id}"]`)?.checked
+  );
+  const nextIdx = currentIdx < 0
+    ? (direction > 0 ? 0 : sorted.length - 1)
+    : (currentIdx + direction + sorted.length) % sorted.length;
+  snapRangeToEvent(sorted[nextIdx]);
+}
+
+function showShortcutsHelp() {
+  const existing = document.getElementById('shortcuts-overlay');
+  if (existing) { existing.remove(); return; }
+  const overlay = document.createElement('div');
+  overlay.id = 'shortcuts-overlay';
+  overlay.innerHTML = '';  // safe — only sets empty
+  const card = document.createElement('article');
+  const h = document.createElement('h3');
+  h.textContent = 'Keyboard shortcuts';
+  card.appendChild(h);
+  const kbds = [
+    ['R', 'Re-render charts'],
+    ['Z', 'Reset zoom on every chart'],
+    ['← / →', 'Snap range to previous / next event'],
+    ['Esc', 'Clear filters or range'],
+    ['?', 'Toggle this help'],
+  ];
+  const dl = document.createElement('dl');
+  dl.className = 'summary-grid';
+  for (const [k, d] of kbds) {
+    const dt = document.createElement('dt');
+    const code = document.createElement('kbd');
+    code.textContent = k;
+    dt.appendChild(code);
+    const dd = document.createElement('dd');
+    dd.textContent = d;
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  }
+  card.appendChild(dl);
+  const close = document.createElement('button');
+  close.textContent = 'Close';
+  close.className = 'secondary';
+  close.addEventListener('click', () => overlay.remove());
+  card.appendChild(close);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+}
 
 // "Clear cache" link in the footer
 document.getElementById('clear-cache-link')?.addEventListener('click', async (e) => {

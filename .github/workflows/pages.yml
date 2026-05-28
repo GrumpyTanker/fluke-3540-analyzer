@@ -19,7 +19,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Assemble site (flatten web/ + copy spec/ next to app.js)
         run: |
           set -euo pipefail
@@ -30,7 +30,7 @@ jobs:
           # Drop test files + Node-only package.json from the deploy artifact
           rm -rf _site/tests _site/package.json
           ls -laR _site | head -60
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: _site
 

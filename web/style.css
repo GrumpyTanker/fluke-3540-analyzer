@@ -142,6 +142,32 @@ pre.error {
   text-decoration: line-through;
 }
 .events-table tr.is-hidden { display: none; }
+.events-table th { user-select: none; }
+.events-table th:hover { background: rgba(0, 0, 0, 0.03); }
+
+/* Shortcuts overlay */
+#shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+#shortcuts-overlay > article {
+  background: var(--pico-background-color, #fff);
+  padding: 1.5rem 2rem;
+  border-radius: var(--pico-border-radius, 0.4rem);
+  min-width: 26rem;
+  max-width: 90vw;
+}
+#shortcuts-overlay kbd {
+  background: var(--pico-code-background-color, #f0f0f0);
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+  font-family: monospace;
+}
 
 .events-table {
   font-size: 0.9rem;
