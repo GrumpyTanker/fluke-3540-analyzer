@@ -12,6 +12,10 @@ import { downloadCompareHtmlReport, downloadHtmlReport } from './html_report.js'
 import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
+import {
+  computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
+  peakHoursToString, saveTariff,
+} from './tariff.js';
 import { analyzeInsights } from './insights.js';
 import { analyzeCompareInsights } from './insights_compare.js';
 import {
@@ -75,6 +79,13 @@ const els = {
   sessionsBar:        document.getElementById('sessions-bar'),
   addSessionInput:    document.getElementById('add-session-input'),
   compareToggleBtn:   document.getElementById('compare-toggle-btn'),
+  tariffSec:          document.getElementById('tariff-section'),
+  tariffCurrency:     document.getElementById('tariff-currency'),
+  tariffPeakRate:     document.getElementById('tariff-peak-rate'),
+  tariffOffpeakRate:  document.getElementById('tariff-offpeak-rate'),
+  tariffPeakHours:    document.getElementById('tariff-peak-hours'),
+  tariffApplyBtn:     document.getElementById('tariff-apply-btn'),
+  tariffResult:       document.getElementById('tariff-result'),
 };
 
 const ms = new MultiSession();
@@ -324,7 +335,10 @@ async function onParseDone(msg) {
     els.controlsSec.hidden = false;
     els.exportSec.hidden = false;
     els.rangeSec.hidden = false;
+    els.tariffSec.hidden = false;
     setupRangeSelector(spec);
+    loadTariffIntoForm();
+    renderTariffResult();
   } catch (e) {
     showError(e);
     return;
@@ -413,11 +427,65 @@ function resetUi() {
   els.chartsSec.hidden = true;
   els.exportSec.hidden = true;
   els.rangeSec.hidden = true;
+  els.tariffSec.hidden = true;
   if (rangeSelector) { rangeSelector.destroy(); rangeSelector = null; }
   currentRange = null;
   ms.clear();
   els.fileInput.value = '';
   els.dirInput.value = '';
+}
+
+// --- Tariff -----------------------------------------------------------------
+
+function activeAssetName() {
+  return currentConfig?.asset_name || 'default';
+}
+
+function loadTariffIntoForm() {
+  const t = loadTariff(activeAssetName()) || {
+    currency: 'USD', peakRate: 0, offpeakRate: 0, peakHours: [],
+  };
+  els.tariffCurrency.value = t.currency;
+  els.tariffPeakRate.value = String(t.peakRate);
+  els.tariffOffpeakRate.value = String(t.offpeakRate);
+  els.tariffPeakHours.value = peakHoursToString(t.peakHours);
+}
+
+function getTariffFromForm() {
+  return normalizeTariff({
+    currency: els.tariffCurrency.value || 'USD',
+    peakRate: Number(els.tariffPeakRate.value),
+    offpeakRate: Number(els.tariffOffpeakRate.value),
+    peakHours: parsePeakHoursString(els.tariffPeakHours.value),
+  });
+}
+
+async function renderTariffResult() {
+  els.tariffResult.replaceChildren();
+  if (!currentRecords) return;
+  const t = getTariffFromForm();
+  if (t.peakRate === 0 && t.offpeakRate === 0) return;
+  const spec = await getSpec();
+  const cost = computeCost(currentRecords, spec, t);
+  const fmt = (n) => `${t.currency} ${n.toFixed(2)}`;
+  const fmtKwh = (n) => `${n.toFixed(2)} kWh`;
+  const dl = document.createElement('dl');
+  dl.className = 'summary-grid';
+  const add = (k, v) => {
+    const dt = document.createElement('dt');
+    dt.textContent = k;
+    const dd = document.createElement('dd');
+    dd.textContent = v;
+    dl.appendChild(dt); dl.appendChild(dd);
+  };
+  add('Imported cost', fmt(cost.importedCost));
+  add('Exported cost', fmt(cost.exportedCost));
+  add('Net cost',      fmt(cost.netCost));
+  add('Peak / off-peak kWh', `${fmtKwh(cost.peakKwh)}  /  ${fmtKwh(cost.offpeakKwh)}`);
+  add('Peak / off-peak cost', `${fmt(cost.peakCost)}  /  ${fmt(cost.offpeakCost)}`);
+  els.tariffResult.replaceWith(dl);
+  dl.id = 'tariff-result';
+  els.tariffResult = dl;
 }
 
 function renderSessionsBar() {
@@ -1068,6 +1136,12 @@ for (const cb of [els.reverseA, els.reverseB, els.reverseC]) {
   });
 }
 els.resetBtn.addEventListener('click', resetUi);
+els.tariffApplyBtn.addEventListener('click', () => {
+  const t = getTariffFromForm();
+  saveTariff(activeAssetName(), t);
+  renderTariffResult().catch(showError);
+});
+
 els.addSessionInput.addEventListener('change', (e) => {
   if (e.target.files?.length) handleFiles(e.target.files);
   e.target.value = '';

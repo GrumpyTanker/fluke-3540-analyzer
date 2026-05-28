@@ -78,6 +78,21 @@
       <div id="insights-list" class="insights-list"></div>
     </section>
 
+    <section id="tariff-section" hidden>
+      <h2>Energy cost (tariff)</h2>
+      <fieldset>
+        <legend><small>Define a peak / off-peak tariff to see $$ cost. Hours are in UTC, peak window is comma-separated <code>HH-HH</code> (e.g. <code>09-21</code>).</small></legend>
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem;">
+          <label>Currency <input type="text" id="tariff-currency" maxlength="6" value="USD" style="max-width: 8rem;"></label>
+          <label>Peak $/kWh <input type="number" id="tariff-peak-rate" step="0.001" min="0" value="0"></label>
+          <label>Off-peak $/kWh <input type="number" id="tariff-offpeak-rate" step="0.001" min="0" value="0"></label>
+        </div>
+        <label>Peak hours <input type="text" id="tariff-peak-hours" placeholder="e.g. 09-21"></label>
+      </fieldset>
+      <p><button type="button" id="tariff-apply-btn" class="secondary">Apply tariff</button></p>
+      <div id="tariff-result" class="summary-grid"></div>
+    </section>
+
     <section id="events-section" hidden>
       <h2>Events</h2>
       <p id="events-status"><small></small></p>
