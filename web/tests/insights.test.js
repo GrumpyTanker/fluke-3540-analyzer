@@ -102,6 +102,40 @@ test('insights: pf_drift recommends kvar sizing', () => {
   assert.ok(pf.recommendedActions.some((a) => /kVAR/.test(a)));
 });
 
+test('insights: breaker context upgrades spike severity', () => {
+  // Phase C peaks at 800 A on top of an otherwise-100 A baseline → ratio = 8×
+  const overrides = {};
+  for (let i = 0; i < 200; i++) overrides[i] = { I_c_max_A: 100 };
+  overrides[100] = { I_c_max_A: 800 };
+  const recs = makeRecords(200, overrides);
+  // Without breaker context — fires as info on ratio alone
+  const noCtx = analyzeInsights(recs, [], spec, [], null, {});
+  const cInfo = noCtx.find((f) => f.kind === 'current_spike_ratio' && f.headline.includes('C'));
+  assert.ok(cInfo);
+  assert.equal(cInfo.severity, 'info');
+  // With breaker = 500 A — 800/500 = 160% → alert + breaker_margin finding fires
+  const withCtx = analyzeInsights(recs, [], spec, [], null, { breakerRatingA: 500 });
+  const cAlert = withCtx.find((f) => f.kind === 'current_spike_ratio' && f.headline.includes('C'));
+  assert.ok(cAlert);
+  assert.equal(cAlert.severity, 'alert');
+  assert.ok(/breaker rating/i.test(cAlert.headline));
+  const margin = withCtx.find((f) => f.kind === 'breaker_margin');
+  assert.ok(margin);
+  assert.equal(margin.severity, 'alert');
+});
+
+test('insights: breaker context warns when 80-100% of rating', () => {
+  const overrides = {};
+  for (let i = 0; i < 200; i++) overrides[i] = { I_a_max_A: 50 };
+  overrides[100] = { I_a_max_A: 350 };  // 87.5% of 400 A breaker
+  const recs = makeRecords(200, overrides);
+  const out = analyzeInsights(recs, [], spec, [], null, { breakerRatingA: 400 });
+  const f = out.find((x) => x.kind === 'current_spike_ratio' && x.headline.includes('A'));
+  assert.ok(f);
+  assert.equal(f.severity, 'warn');
+  assert.equal(out.find((x) => x.kind === 'breaker_margin'), undefined);
+});
+
 test('insights: sorted alert > warn > info', () => {
   const overrides = {};
   for (let i = 0; i < 120; i++) {

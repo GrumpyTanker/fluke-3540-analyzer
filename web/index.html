@@ -89,7 +89,11 @@
         </div>
         <label>Peak hours <input type="text" id="tariff-peak-hours" placeholder="e.g. 09-21"></label>
       </fieldset>
-      <p><button type="button" id="tariff-apply-btn" class="secondary">Apply tariff</button></p>
+      <fieldset>
+        <legend><small>Optional: tell the insights engine your main breaker rating to get headroom and over-rating findings.</small></legend>
+        <label>Main breaker (A) <input type="number" id="breaker-rating" step="1" min="0" placeholder="e.g. 400" style="max-width: 10rem;"></label>
+      </fieldset>
+      <p><button type="button" id="tariff-apply-btn" class="secondary">Apply tariff &amp; breaker</button></p>
       <div id="tariff-result" class="summary-grid"></div>
     </section>
 

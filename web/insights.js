@@ -281,8 +281,9 @@ function ruleOutageFrequency(records, events, spec) {
   }];
 }
 
-function ruleCurrentSpikeRatio(records, spec) {
+function ruleCurrentSpikeRatio(records, spec, opts = {}) {
   const threshold = ruleVal(spec, 'current_to_mean_ratio_alert', 5.0);
+  const breakerA = Number(opts.breakerRatingA) > 0 ? Number(opts.breakerRatingA) : null;
   const findings = [];
   const notOut = nonOutageMask(records, spec);
   for (const phase of ['a', 'b', 'c']) {
@@ -294,18 +295,32 @@ function ruleCurrentSpikeRatio(records, spec) {
     if (m <= 0) continue;
     const ratio = peak / m;
     if (ratio < threshold) continue;
+    let headline, severity = 'info';
+    if (breakerA) {
+      const pct = peak / breakerA * 100;
+      headline = `Phase ${phase.toUpperCase()} peak ${peak.toFixed(0)} A is ${pct.toFixed(1)}% of breaker rating (${breakerA} A)`;
+      if (pct > 100) severity = 'alert';
+      else if (pct > 80) severity = 'warn';
+    } else {
+      headline = `Phase ${phase.toUpperCase()} peak current ${peak.toFixed(0)} A is ${ratio.toFixed(1)}× the steady mean (${m.toFixed(0)} A)`;
+    }
+    const breakerLine = breakerA
+      ? ` Given the configured breaker rating of ${breakerA} A, that's ${(peak / breakerA * 100).toFixed(1)}% of nameplate — ` +
+        'compare against the instantaneous-trip multiple to confirm the breaker holds.'
+      : '';
     findings.push({
-      id: -1, kind: 'current_spike_ratio', severity: 'info',
-      headline: `Phase ${phase.toUpperCase()} peak current ${peak.toFixed(0)} A is ${ratio.toFixed(1)}× the steady mean (${m.toFixed(0)} A)`,
+      id: -1, kind: 'current_spike_ratio', severity,
+      headline,
       detail:
         `Phase ${phase.toUpperCase()} sustained an average current of ${m.toFixed(1)} A ` +
-        `during non-outage operation but reached a peak of ${peak.toFixed(1)} A. ` +
-        `A ${ratio.toFixed(1)}× peak-to-mean ratio is typical for motor starts or ` +
-        "restoration inrush — verify it stays within the upstream breaker's " +
-        'instantaneous trip curve.',
+        `during non-outage operation but reached a peak of ${peak.toFixed(1)} A ` +
+        `(${ratio.toFixed(1)}× the steady mean — typical for motor starts or ` +
+        'restoration inrush).' + breakerLine,
       relatedEventIds: [],
       recommendedActions: [
-        "Compare the peak against the breaker's instantaneous trip multiple.",
+        breakerA
+          ? `Verify the peak ${peak.toFixed(0)} A is within ${breakerA} A breaker's instantaneous-trip headroom.`
+          : "Compare the peak against the breaker's instantaneous trip multiple.",
         'If this is a recurring motor inrush, soft-starter or VFD retrofits ' +
         'can cut peak current to ~2-3× nominal.',
       ],
@@ -314,11 +329,41 @@ function ruleCurrentSpikeRatio(records, spec) {
   return findings;
 }
 
+function ruleBreakerMargin(records, spec, opts = {}) {
+  const breakerA = Number(opts.breakerRatingA) > 0 ? Number(opts.breakerRatingA) : null;
+  if (!breakerA) return [];
+  const notOut = nonOutageMask(records, spec);
+  let worstPhase = null;
+  let worstPeak = 0;
+  for (const phase of ['a', 'b', 'c']) {
+    const iMax = col(records, spec, `I_${phase}_max_A`);
+    const valid = iMax.filter((_, i) => notOut[i]);
+    if (!valid.length) continue;
+    const peak = Math.max(...valid);
+    if (peak > worstPeak) { worstPeak = peak; worstPhase = phase; }
+  }
+  if (!worstPhase || worstPeak <= breakerA) return [];
+  const pct = worstPeak / breakerA * 100;
+  return [{
+    id: -1, kind: 'breaker_margin', severity: 'alert',
+    headline: `Peak current ${worstPeak.toFixed(0)} A exceeds breaker rating ${breakerA} A (${pct.toFixed(0)}%)`,
+    detail:
+      `Phase ${worstPhase.toUpperCase()} hit ${worstPeak.toFixed(1)} A — over the configured ` +
+      `breaker rating of ${breakerA} A. Even short excursions above the continuous rating ` +
+      'will eventually trip on time-over-current; sustained current at this level is unsafe.',
+    relatedEventIds: [],
+    recommendedActions: [
+      'Verify the breaker actually held during this event (compare to trip logs).',
+      'If recurring, upsize the breaker OR reduce the inrush via soft-start / staggered start.',
+    ],
+  }];
+}
+
 // --- Public API -------------------------------------------------------------
 
 const SEV_RANK = { alert: 0, warn: 1, info: 2 };
 
-export function analyzeInsights(records, events, spec, _snapshots = [], _config = null) {
+export function analyzeInsights(records, events, spec, _snapshots = [], _config = null, opts = {}) {
   const raw = [
     ...ruleOutageSignatures(events, spec),
     ...rulePhaseAsymmetry(records, spec),
@@ -326,7 +371,8 @@ export function analyzeInsights(records, events, spec, _snapshots = [], _config 
     ...ruleImbalanceSustained(records, spec),
     ...ruleFreqStiffness(records, events, spec),
     ...ruleOutageFrequency(records, events, spec),
-    ...ruleCurrentSpikeRatio(records, spec),
+    ...ruleCurrentSpikeRatio(records, spec, opts),
+    ...ruleBreakerMargin(records, spec, opts),
   ];
   raw.sort((a, b) => (SEV_RANK[a.severity] - SEV_RANK[b.severity]) || a.kind.localeCompare(b.kind));
   return raw.map((f, i) => ({ ...f, id: i }));

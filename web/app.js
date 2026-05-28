@@ -88,6 +88,7 @@ const els = {
   tariffPeakHours:    document.getElementById('tariff-peak-hours'),
   tariffApplyBtn:     document.getElementById('tariff-apply-btn'),
   tariffResult:       document.getElementById('tariff-result'),
+  breakerRating:      document.getElementById('breaker-rating'),
 };
 
 const ms = new MultiSession();
@@ -318,7 +319,8 @@ async function onParseDone(msg) {
     currentEvents = detectEvents(currentRecords, spec);
     currentSnapshots = pickSnapshots(currentRecords, currentEvents, spec, { n: 3 });
     currentFindings = analyzeInsights(currentRecords, currentEvents, spec,
-                                      currentSnapshots, currentConfig);
+                                      currentSnapshots, currentConfig,
+                                      { breakerRatingA: loadBreakerRating() });
     // Push into multi-session state (idempotent if added externally).
     if (!msg.skipMsAdd) {
       ms.add({
@@ -456,6 +458,21 @@ function loadTariffIntoForm() {
   els.tariffPeakRate.value = String(t.peakRate);
   els.tariffOffpeakRate.value = String(t.offpeakRate);
   els.tariffPeakHours.value = peakHoursToString(t.peakHours);
+  els.breakerRating.value = String(loadBreakerRating() || '');
+}
+
+function loadBreakerRating() {
+  try {
+    const raw = localStorage.getItem('breaker:' + activeAssetName());
+    return raw ? Number(raw) : 0;
+  } catch (_) { return 0; }
+}
+
+function saveBreakerRating(amps) {
+  try {
+    if (amps > 0) localStorage.setItem('breaker:' + activeAssetName(), String(amps));
+    else localStorage.removeItem('breaker:' + activeAssetName());
+  } catch (_) {/* ignore */}
 }
 
 function getTariffFromForm() {
@@ -1199,9 +1216,20 @@ els.eventsExportNotes?.addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 1500);
 });
 
-els.tariffApplyBtn.addEventListener('click', () => {
+els.tariffApplyBtn.addEventListener('click', async () => {
   const t = getTariffFromForm();
   saveTariff(activeAssetName(), t);
+  const amps = Number(els.breakerRating.value) || 0;
+  saveBreakerRating(amps);
+  // Re-run insights with the new breaker context.
+  if (currentRecords) {
+    const spec = await getSpec();
+    currentFindings = analyzeInsights(currentRecords, currentEvents, spec,
+                                      currentSnapshots, currentConfig,
+                                      { breakerRatingA: amps });
+    renderInsights();
+    els.insightsSec.hidden = currentFindings.length === 0;
+  }
   renderTariffResult().catch(showError);
 });
 
