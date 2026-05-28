@@ -119,10 +119,13 @@
       <h2>Export</h2>
       <p>
         <button type="button" id="export-xlsx-btn">Download XLSX workbook</button>
+        <button type="button" id="export-html-btn" class="secondary">Download HTML report</button>
         <button type="button" id="export-bundle-btn" class="secondary">Download everything (.zip)</button>
       </p>
       <p><small>
-        The zip bundles the workbook, a slim per-second CSV, and every chart you've rendered as a PNG.
+        <strong>XLSX</strong> = workbook with Summary + Data sheets.
+        <strong>HTML report</strong> = single self-contained .html embedding the rendered charts + summary + events table (opens in any browser, no scripts).
+        <strong>.zip</strong> bundles the workbook, slim CSV, and every chart PNG.
       </small></p>
     </section>
 

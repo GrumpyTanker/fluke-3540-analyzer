@@ -23,7 +23,7 @@ from .parser import (
 )
 from .plots import (
     GnuplotNotFound, render_event_zoom, render_full_session,
-    render_snapshot_zoom, write_xlsx,
+    render_snapshot_zoom, write_html_report, write_xlsx,
 )
 from .plots.full_session import QUANTITY_SPECS as FULL_QUANTITIES
 from .snapshots import Snapshot, pick_snapshots
@@ -129,6 +129,8 @@ def build_argparser() -> argparse.ArgumentParser:
 
     # Output knobs
     ap.add_argument("--no-xlsx", action="store_true", help="Skip XLSX report")
+    ap.add_argument("--no-html", action="store_true",
+                    help="Skip the self-contained HTML report (default writes report.html)")
     ap.add_argument("--no-overview", action="store_true",
                     help="Skip the overview multiplot")
     ap.add_argument("--format", choices=("png", "svg"), default="png",
@@ -289,6 +291,16 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
         xlsx_path = outdir / "report.xlsx"
         print(f"[render] xlsx workbook → {xlsx_path}")
         write_xlsx(min_csv, xlsx_path, config=config, csv_per_second_path=full_csv)
+
+    if not args.no_html:
+        html_path = outdir / "report.html"
+        print(f"[render] html report → {html_path}")
+        write_html_report(
+            html_path, charts_dir=charts_dir,
+            config=config,
+            summary_stats=_build_summary_stats(events, snaps),
+            events=events, snapshots=snaps,
+        )
 
 
 def _load_existing(outdir: Path) -> tuple[Path, Path, list[Event], list[Snapshot], dict]:

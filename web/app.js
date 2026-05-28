@@ -7,6 +7,7 @@ import { FULL_QUANTITIES, ZOOM_QUANTITIES, renderChart } from './plots.js';
 import { buildXlsx, downloadBlob } from './xlsx_export.js';
 import { downloadBundleZip } from './bundle_export.js';
 import { looksLikeFel, unpackFel } from './fel.js';
+import { downloadHtmlReport } from './html_report.js';
 
 // Try sibling first (e.g. when the Pages deploy flattens spec/ next to app.js),
 // then fall back to ../spec/ for serving from the repo root.
@@ -53,6 +54,7 @@ const els = {
   snapshotChartsHead: document.getElementById('snapshot-charts-heading'),
   exportSec:          document.getElementById('export-section'),
   exportXlsxBtn:      document.getElementById('export-xlsx-btn'),
+  exportHtmlBtn:      document.getElementById('export-html-btn'),
   exportBundleBtn:    document.getElementById('export-bundle-btn'),
 };
 
@@ -333,6 +335,16 @@ async function exportBundle() {
   await downloadBundleZip({
     records: currentRecords, spec, xlsxBlob,
     assetName: currentConfig?.asset_name,
+  });
+}
+
+async function exportHtmlReport() {
+  if (!currentRecords) return;
+  const spec = await getSpec();
+  const title = `Fluke 3540 FC — ${currentConfig?.asset_name ?? 'Session'} Report`;
+  downloadHtmlReport({
+    title, config: currentConfig, records: currentRecords, spec,
+    events: currentEvents, snapshots: currentSnapshots,
   });
 }
 
@@ -622,6 +634,7 @@ els.eventsClearFilters?.addEventListener('click', () => {
 });
 els.renderBtn.addEventListener('click', () => renderAll().catch(showError));
 els.exportXlsxBtn.addEventListener('click', () => exportXlsx().catch(showError));
+els.exportHtmlBtn.addEventListener('click', () => exportHtmlReport().catch(showError));
 els.exportBundleBtn.addEventListener('click', () => exportBundle().catch(showError));
 
 // --- Theme (light / dark / auto) -------------------------------------------
