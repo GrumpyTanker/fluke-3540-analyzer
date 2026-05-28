@@ -11,6 +11,7 @@ import { looksLikeCsv, parseCsvBuffer } from './csv_input.js';
 import { downloadHtmlReport } from './html_report.js';
 import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
+import { MultiSession } from './multi_session.js';
 import { analyzeInsights } from './insights.js';
 import {
   rangeFromHash, rangeToHash, renderRangeSelector, scopeRecordsToRange,
@@ -69,7 +70,13 @@ const els = {
   exportHtmlBtn:      document.getElementById('export-html-btn'),
   exportPdfBtn:       document.getElementById('export-pdf-btn'),
   exportBundleBtn:    document.getElementById('export-bundle-btn'),
+  sessionsSec:        document.getElementById('sessions-section'),
+  sessionsBar:        document.getElementById('sessions-bar'),
+  addSessionInput:    document.getElementById('add-session-input'),
+  compareToggleBtn:   document.getElementById('compare-toggle-btn'),
 };
+
+const ms = new MultiSession();
 
 let cachedSpec = null;
 let currentArrayBuffer = null;
@@ -293,11 +300,24 @@ async function onParseDone(msg) {
     currentSnapshots = pickSnapshots(currentRecords, currentEvents, spec, { n: 3 });
     currentFindings = analyzeInsights(currentRecords, currentEvents, spec,
                                       currentSnapshots, currentConfig);
+    // Push into multi-session state (idempotent if added externally).
+    if (!msg.skipMsAdd) {
+      ms.add({
+        records: currentRecords,
+        events: currentEvents,
+        snapshots: currentSnapshots,
+        findings: currentFindings,
+        config: currentConfig,
+        fileHash: msg.fileHash ?? null,
+      });
+    }
     renderInsights();
     renderEventsTable();
     renderSnapshotsList();
     renderQuantityGrid();
+    renderSessionsBar();
     els.insightsSec.hidden = currentFindings.length === 0;
+    els.sessionsSec.hidden = false;
     els.eventsSec.hidden = false;
     els.snapshotsSec.hidden = currentSnapshots.length === 0;
     els.controlsSec.hidden = false;
@@ -384,6 +404,7 @@ function resetUi() {
   hideError();
   els.summarySec.hidden = true;
   els.progressSec.hidden = true;
+  els.sessionsSec.hidden = true;
   els.insightsSec.hidden = true;
   els.eventsSec.hidden = true;
   els.snapshotsSec.hidden = true;
@@ -393,8 +414,80 @@ function resetUi() {
   els.rangeSec.hidden = true;
   if (rangeSelector) { rangeSelector.destroy(); rangeSelector = null; }
   currentRange = null;
+  ms.clear();
   els.fileInput.value = '';
   els.dirInput.value = '';
+}
+
+function renderSessionsBar() {
+  els.sessionsBar.replaceChildren();
+  const all = ms.getAll();
+  const active = ms.getActive();
+  for (const s of all) {
+    const pill = document.createElement('span');
+    pill.className = 'session-pill' + (s === active ? ' is-active' : '');
+    pill.style.color = s.color;
+    const label = document.createElement('span');
+    label.className = 'label-text';
+    label.textContent = s.label;
+    label.contentEditable = 'true';
+    label.spellcheck = false;
+    label.addEventListener('blur', () => {
+      const newLabel = label.textContent.trim();
+      if (newLabel && newLabel !== s.label) {
+        if (!ms.rename(s.label, newLabel)) label.textContent = s.label;
+      } else {
+        label.textContent = s.label;
+      }
+    });
+    label.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); label.blur(); }
+    });
+    pill.addEventListener('click', (e) => {
+      if (e.target === label) return;  // editing the label
+      switchToSession(s.label);
+    });
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'close-btn';
+    close.textContent = '×';
+    close.title = 'Remove this session';
+    close.addEventListener('click', (e) => {
+      e.stopPropagation();
+      ms.remove(s.label);
+      const a = ms.getActive();
+      if (a) switchToSession(a.label);
+      else resetUi();
+      els.compareToggleBtn.hidden = !ms.canCompare();
+    });
+    pill.appendChild(label);
+    pill.appendChild(close);
+    els.sessionsBar.appendChild(pill);
+  }
+  els.compareToggleBtn.hidden = !ms.canCompare();
+  els.compareToggleBtn.classList.toggle('is-on', ms.compareMode);
+  els.compareToggleBtn.textContent = ms.compareMode ? 'Exit compare overlay' : 'Compare overlay';
+}
+
+function switchToSession(label) {
+  if (!ms.setActive(label)) return;
+  const s = ms.getActive();
+  if (!s) return;
+  currentRecords = s.records;
+  currentRecordCount = s.records.length;
+  currentEvents = s.events;
+  currentSnapshots = s.snapshots;
+  currentFindings = s.findings;
+  currentConfig = s.config;
+  currentArrayBuffer = null;  // can't re-parse a switched-to session
+  currentTimeRangeMs = s.records.length
+    ? [s.records[0].startMs, s.records[s.records.length - 1].endMs]
+    : null;
+  renderSummary();
+  renderInsights();
+  renderEventsTable();
+  renderSnapshotsList();
+  renderSessionsBar();
 }
 
 function setupRangeSelector(spec) {
@@ -767,15 +860,19 @@ async function renderAll() {
   els.snapshotCharts.replaceChildren();
 
   // Full-session charts — scoped to current range if one is set.
-  // Anomaly bands are drawn on every full chart (visual triage).
-  const fullOpts = {
-    eventBands: currentEvents,
-    ...(currentRange
-      ? { startMs: currentRange.startMs, endMs: currentRange.endMs }
-      : {}),
-  };
-  for (const q of quantities) {
-    renderChart(els.fullCharts, currentRecords, spec, q, FULL_QUANTITIES, fullOpts);
+  // In compare mode, render an overlay chart per quantity stacking every session.
+  if (ms.compareMode && ms.canCompare()) {
+    for (const q of quantities) renderOverlayChart(els.fullCharts, spec, q, quantities);
+  } else {
+    const fullOpts = {
+      eventBands: currentEvents,
+      ...(currentRange
+        ? { startMs: currentRange.startMs, endMs: currentRange.endMs }
+        : {}),
+    };
+    for (const q of quantities) {
+      renderChart(els.fullCharts, currentRecords, spec, q, FULL_QUANTITIES, fullOpts);
+    }
   }
 
   // Event zooms — only quantities that exist in ZOOM_QUANTITIES
@@ -808,6 +905,76 @@ async function renderAll() {
       });
     }
   }
+}
+
+function renderOverlayChart(parentEl, spec, quantityKey, _allQuantities) {
+  // Build a compare-overlay chart: each session's series for `quantityKey`,
+  // x-axis = seconds-from-each-session-start so non-overlapping timestamps
+  // can still be visually compared.
+  const uPlot = window.uPlot;
+  const def = FULL_QUANTITIES[quantityKey];
+  if (!def || !uPlot) return;
+  const all = ms.getAll();
+  if (all.length === 0) return;
+  // We only use the FIRST series of each quantity for overlay (keeps the
+  // chart readable; FULL_QUANTITIES often has 3 phases — we'd otherwise
+  // overlay 9+ lines for 3 sessions × 3 phases).
+  const firstCol = def.series[0];
+  const fi = new Map(spec.fields.map((f) => [f.name, f.index]));
+  const idx = fi.get(firstCol.name);
+
+  const xs = [];   // pooled relative-seconds axis
+  const ySeries = all.map(() => []);
+  // Build a unified sorted x axis from the union of all sessions' rel-seconds.
+  const xSet = new Set();
+  const relValues = all.map((s) =>
+    s.records.map((r) => Math.round((r.startMs - s.records[0]?.startMs ?? 0) / 1000))
+  );
+  for (const arr of relValues) for (const x of arr) xSet.add(x);
+  const xsAll = [...xSet].sort((a, b) => a - b);
+  // Per-session lookup: relSec → value
+  for (let si = 0; si < all.length; si++) {
+    const s = all[si];
+    const map = new Map();
+    for (let i = 0; i < s.records.length; i++) {
+      const rel = Math.round((s.records[i].startMs - (s.records[0]?.startMs ?? 0)) / 1000);
+      map.set(rel, s.records[i].floats[idx] * firstCol.scale);
+    }
+    for (const x of xsAll) ySeries[si].push(map.has(x) ? map.get(x) : null);
+  }
+
+  // Wrap in a chart card with a basic toolbar.
+  const wrapper = document.createElement('article');
+  wrapper.className = 'chart-wrapper';
+  const header = document.createElement('header');
+  header.className = 'chart-header';
+  const titleEl = document.createElement('h3');
+  titleEl.textContent = def.title + ' — overlay (' + all.length + ' sessions)';
+  header.appendChild(titleEl);
+  wrapper.appendChild(header);
+  const chartDiv = document.createElement('div');
+  chartDiv.className = 'chart-canvas';
+  wrapper.appendChild(chartDiv);
+  parentEl.appendChild(wrapper);
+
+  const series = [
+    { label: 'sec from session start' },
+    ...all.map((s) => ({ label: s.label, stroke: s.color, width: 1.4 })),
+  ];
+  const data = [xsAll, ...ySeries];
+  const plot = new uPlot({
+    width: chartDiv.clientWidth || 900,
+    height: 280,
+    series,
+    scales: { x: { time: false } },
+    axes: [{ stroke: '#666', label: 'Seconds' }, { stroke: '#666', label: def.ylabel }],
+    cursor: { drag: { x: true, y: false, setScale: true }, focus: { prox: 30 } },
+    legend: { live: true },
+  }, data, chartDiv);
+  const resizeObs = new ResizeObserver(() => {
+    plot.setSize({ width: chartDiv.clientWidth, height: 280 });
+  });
+  resizeObs.observe(chartDiv);
 }
 
 function makeWindowHeader(boldText, plainText) {
@@ -890,6 +1057,15 @@ for (const cb of [els.reverseA, els.reverseB, els.reverseC]) {
   });
 }
 els.resetBtn.addEventListener('click', resetUi);
+els.addSessionInput.addEventListener('change', (e) => {
+  if (e.target.files?.length) handleFiles(e.target.files);
+  e.target.value = '';
+});
+els.compareToggleBtn.addEventListener('click', () => {
+  ms.setCompareMode(!ms.compareMode);
+  renderSessionsBar();
+  renderAll().catch(showError);
+});
 els.eventsSearch?.addEventListener('input', applyEventsFilter);
 els.eventsClearFilters?.addEventListener('click', () => {
   els.eventsSearch.value = '';

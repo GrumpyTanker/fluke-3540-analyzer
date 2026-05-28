@@ -58,6 +58,52 @@ pre.error {
   word-break: break-word;
 }
 
+/* Sessions bar (multi-session compare) */
+.sessions-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+.session-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--pico-muted-border-color, #aaa);
+  border-left: 4px solid currentColor;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  background: var(--pico-card-background-color);
+  user-select: none;
+}
+.session-pill.is-active {
+  background: rgba(0, 0, 0, 0.06);
+  font-weight: bold;
+}
+.session-pill .close-btn {
+  background: none;
+  border: none;
+  padding: 0 0.2rem;
+  font-size: 1rem;
+  cursor: pointer;
+  color: var(--pico-muted-color, #888);
+  line-height: 1;
+  margin: 0;
+}
+.session-pill .close-btn:hover { color: #cc0000; }
+.session-pill .label-text {
+  outline: none;
+  min-width: 1ch;
+}
+
+#compare-toggle-btn.is-on {
+  background: var(--pico-primary, #1095c1);
+  color: #fff;
+  border-color: var(--pico-primary, #1095c1);
+}
+
 /* Range selector */
 .range-label { font-size: 0.9rem; margin-bottom: 0.3rem; }
 .range-label button { margin: 0; padding: 0.2rem 0.6rem; font-size: 0.8rem; }

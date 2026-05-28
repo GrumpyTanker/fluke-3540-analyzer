@@ -41,6 +41,16 @@
       <p id="progress-label"><small>0% — preparing</small></p>
     </section>
 
+    <section id="sessions-section" hidden>
+      <h2>Sessions</h2>
+      <div id="sessions-bar" class="sessions-bar"></div>
+      <p>
+        <label for="add-session-input" role="button" class="secondary outline">+ Add session for comparison&hellip;</label>
+        <input type="file" id="add-session-input" accept=".bin,.fel,.csv,application/octet-stream,application/zip,text/csv" hidden>
+        <button type="button" id="compare-toggle-btn" class="secondary outline" hidden>Compare overlay</button>
+      </p>
+    </section>
+
     <section id="summary-section" hidden>
       <h2>Session summary</h2>
       <div id="summary-grid" class="summary-grid"></div>
