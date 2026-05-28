@@ -1,0 +1,50 @@
+/* Custom on top of Pico — drop zone visuals + summary grid. */
+
+.drop-zone {
+  border: 2px dashed var(--pico-muted-border-color, #a0a0a0);
+  border-radius: var(--pico-border-radius, 0.5rem);
+  padding: 3rem 1rem;
+  text-align: center;
+  background: var(--pico-card-background-color);
+  transition: border-color 120ms ease, background 120ms ease;
+  cursor: pointer;
+}
+.drop-zone.is-dragging {
+  border-color: var(--pico-primary, #1095c1);
+  background: var(--pico-primary-background, #e1f5fa);
+}
+.drop-zone-inner {
+  pointer-events: none;
+}
+.drop-zone-inner label[role="button"] {
+  pointer-events: auto;
+  margin: 0 0.25rem;
+}
+.drop-icon {
+  font-size: 2.5rem;
+  margin: 0 0 0.5rem 0;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.4rem 1.5rem;
+  margin: 1rem 0;
+  font-variant-numeric: tabular-nums;
+}
+.summary-grid dt {
+  font-weight: bold;
+  color: var(--pico-muted-color, #555);
+}
+.summary-grid dd {
+  margin: 0;
+}
+
+pre.error {
+  background: var(--pico-form-element-invalid-active-border-color, #f5c6cb);
+  color: #842029;
+  padding: 1rem;
+  border-radius: 0.4rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
