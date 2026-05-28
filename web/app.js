@@ -1,5 +1,11 @@
 // Main orchestration: drop-zone handling, spec/file loading, worker dispatch,
-// summary rendering. Pure ESM, no framework.
+// summary rendering, event detection, chart UI, exports. Pure ESM, no framework.
+
+import { detectEvents } from './events.js';
+import { pickSnapshots } from './snapshots.js';
+import { FULL_QUANTITIES, ZOOM_QUANTITIES, renderChart } from './plots.js';
+import { buildXlsx, downloadBlob } from './xlsx_export.js';
+import { downloadBundleZip } from './bundle_export.js';
 
 // Try sibling first (e.g. when the Pages deploy flattens spec/ next to app.js),
 // then fall back to ../spec/ for serving from the repo root.
@@ -39,6 +45,9 @@ const els = {
   eventChartsHead:    document.getElementById('event-charts-heading'),
   snapshotCharts:     document.getElementById('snapshot-charts'),
   snapshotChartsHead: document.getElementById('snapshot-charts-heading'),
+  exportSec:          document.getElementById('export-section'),
+  exportXlsxBtn:      document.getElementById('export-xlsx-btn'),
+  exportBundleBtn:    document.getElementById('export-bundle-btn'),
 };
 
 let cachedSpec = null;
@@ -182,6 +191,7 @@ async function onParseDone(msg) {
     els.eventsSec.hidden = false;
     els.snapshotsSec.hidden = currentSnapshots.length === 0;
     els.controlsSec.hidden = false;
+    els.exportSec.hidden = false;
   } catch (e) {
     showError(e);
     return;
@@ -264,8 +274,27 @@ function resetUi() {
   els.snapshotsSec.hidden = true;
   els.controlsSec.hidden = true;
   els.chartsSec.hidden = true;
+  els.exportSec.hidden = true;
   els.fileInput.value = '';
   els.dirInput.value = '';
+}
+
+async function exportXlsx() {
+  if (!currentRecords) return;
+  const spec = await getSpec();
+  const blob = buildXlsx({ records: currentRecords, spec, config: currentConfig });
+  const name = (currentConfig?.asset_name ?? 'fluke_session').replace(/[^a-zA-Z0-9._-]+/g, '_');
+  downloadBlob(blob, `${name}_report.xlsx`);
+}
+
+async function exportBundle() {
+  if (!currentRecords) return;
+  const spec = await getSpec();
+  const xlsxBlob = buildXlsx({ records: currentRecords, spec, config: currentConfig });
+  await downloadBundleZip({
+    records: currentRecords, spec, xlsxBlob,
+    assetName: currentConfig?.asset_name,
+  });
 }
 
 // --- Events + snapshots + controls rendering --------------------------------
@@ -493,6 +522,8 @@ els.reverseToggle.addEventListener('change', () => {
 });
 els.resetBtn.addEventListener('click', resetUi);
 els.renderBtn.addEventListener('click', () => renderAll().catch(showError));
+els.exportXlsxBtn.addEventListener('click', () => exportXlsx().catch(showError));
+els.exportBundleBtn.addEventListener('click', () => exportBundle().catch(showError));
 
 // Prefetch the spec so first-drop is snappy.
 getSpec().catch(() => {/* surface only when actually parsing */});
