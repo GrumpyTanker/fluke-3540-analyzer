@@ -153,6 +153,12 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
   dlCsv.className = 'secondary outline';
   dlCsv.type = 'button';
   dlCsv.textContent = 'CSV';
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'secondary outline';
+  resetBtn.type = 'button';
+  resetBtn.textContent = 'Reset zoom';
+  resetBtn.title = 'Drag to box-zoom, scroll to zoom around cursor, Shift+drag to pan';
+  toolbar.appendChild(resetBtn);
   toolbar.appendChild(dlPng);
   toolbar.appendChild(dlCsv);
   header.appendChild(toolbar);
@@ -180,7 +186,9 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
       { stroke: '#666' },
       { stroke: '#666', label: def.ylabel },
     ],
-    cursor: { drag: { x: true, y: false }, focus: { prox: 8 } },
+    // Default cursor.drag = { setScale: true } gives box-zoom behavior.
+    // Shift held during drag pans instead of zooming (we hook below).
+    cursor: { drag: { x: true, y: false, setScale: true }, focus: { prox: 8 } },
     legend: { live: true },
   };
   const plot = new uPlot(opts, data, chartDiv);
@@ -191,11 +199,71 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
   });
   resizeObs.observe(chartDiv);
 
+  attachZoomOnScroll(plot, chartDiv);
+  attachShiftDragPan(plot, chartDiv);
+
   // Toolbar handlers
   dlPng.addEventListener('click', () => downloadChartPng(plot, def.title));
   dlCsv.addEventListener('click', () => downloadChartCsv(data, def, def.title));
+  resetBtn.addEventListener('click', () => {
+    plot.batch(() => {
+      plot.setScale('x', { min: null, max: null });
+      // y autoscale follows when x changes
+    });
+  });
 
   return { plot, container: wrapper, data, def };
+}
+
+function attachZoomOnScroll(plot, chartDiv) {
+  chartDiv.addEventListener('wheel', (e) => {
+    if (!e.deltaY) return;
+    // Hold Shift+wheel as the chartjs-style "pan" gesture — defer to native scroll.
+    if (e.shiftKey) return;
+    e.preventDefault();
+    const rect = plot.over.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const cursorX = plot.posToVal(px, 'x');
+    const xScale = plot.scales.x;
+    if (xScale.min == null || xScale.max == null) return;
+    const factor = e.deltaY < 0 ? 0.8 : 1.25;  // wheel up = zoom in
+    const newMin = cursorX - (cursorX - xScale.min) * factor;
+    const newMax = cursorX + (xScale.max - cursorX) * factor;
+    plot.setScale('x', { min: newMin, max: newMax });
+  }, { passive: false });
+}
+
+function attachShiftDragPan(plot, chartDiv) {
+  let dragging = false;
+  let startX = 0;
+  let startMin = 0;
+  let startMax = 0;
+  chartDiv.addEventListener('pointerdown', (e) => {
+    if (!e.shiftKey) return;
+    dragging = true;
+    startX = e.clientX;
+    const xScale = plot.scales.x;
+    startMin = xScale.min;
+    startMax = xScale.max;
+    chartDiv.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  chartDiv.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const rect = plot.over.getBoundingClientRect();
+    const pxRange = rect.width;
+    const dataRange = startMax - startMin;
+    const dxPx = e.clientX - startX;
+    const dxVal = -(dxPx / pxRange) * dataRange;
+    plot.setScale('x', { min: startMin + dxVal, max: startMax + dxVal });
+  });
+  const release = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    try { chartDiv.releasePointerCapture(e.pointerId); } catch (_) {}
+  };
+  chartDiv.addEventListener('pointerup', release);
+  chartDiv.addEventListener('pointercancel', release);
 }
 
 function downloadChartPng(plot, name) {
