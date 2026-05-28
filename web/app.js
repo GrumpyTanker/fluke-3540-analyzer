@@ -8,26 +8,47 @@ const SPEC_CANDIDATES = [
   new URL('../spec/field_map.json', import.meta.url).href,
 ];
 
+const DEFAULT_QUANTITIES = ['voltage', 'current', 'power', 'pf', 'frequency'];
+
 const els = {
-  dropZone:       document.getElementById('drop-zone'),
-  fileInput:      document.getElementById('file-input'),
-  dirInput:       document.getElementById('dir-input'),
-  progressSec:    document.getElementById('progress-section'),
-  progressBar:    document.getElementById('progress-bar'),
-  progressLabel:  document.getElementById('progress-label'),
-  summarySec:     document.getElementById('summary-section'),
-  summaryGrid:    document.getElementById('summary-grid'),
-  reverseToggle:  document.getElementById('reverse-cts-toggle'),
-  errorSec:       document.getElementById('error-section'),
-  errorMsg:       document.getElementById('error-message'),
-  resetBtn:       document.getElementById('reset-button'),
+  dropZone:           document.getElementById('drop-zone'),
+  fileInput:          document.getElementById('file-input'),
+  dirInput:           document.getElementById('dir-input'),
+  progressSec:        document.getElementById('progress-section'),
+  progressBar:        document.getElementById('progress-bar'),
+  progressLabel:      document.getElementById('progress-label'),
+  summarySec:         document.getElementById('summary-section'),
+  summaryGrid:        document.getElementById('summary-grid'),
+  reverseToggle:      document.getElementById('reverse-cts-toggle'),
+  errorSec:           document.getElementById('error-section'),
+  errorMsg:           document.getElementById('error-message'),
+  resetBtn:           document.getElementById('reset-button'),
+  eventsSec:          document.getElementById('events-section'),
+  eventsStatus:       document.getElementById('events-status'),
+  eventsTbody:        document.getElementById('events-tbody'),
+  snapshotsSec:       document.getElementById('snapshots-section'),
+  snapshotsList:      document.getElementById('snapshots-list'),
+  controlsSec:        document.getElementById('controls-section'),
+  quantityGrid:       document.getElementById('quantity-grid'),
+  preSecsInput:       document.getElementById('pre-secs'),
+  postSecsInput:      document.getElementById('post-secs'),
+  renderBtn:          document.getElementById('render-button'),
+  chartsSec:          document.getElementById('charts-section'),
+  fullCharts:         document.getElementById('full-charts'),
+  eventCharts:        document.getElementById('event-charts'),
+  eventChartsHead:    document.getElementById('event-charts-heading'),
+  snapshotCharts:     document.getElementById('snapshot-charts'),
+  snapshotChartsHead: document.getElementById('snapshot-charts-heading'),
 };
 
 let cachedSpec = null;
 let currentArrayBuffer = null;
 let currentConfig = null;     // parsed ES.NNN-config.json companion (or null)
+let currentRecords = null;    // full parsed Records array (kept in memory)
 let currentRecordCount = 0;
 let currentTimeRangeMs = null;
+let currentEvents = [];       // detected events for currentRecords
+let currentSnapshots = [];    // picked snapshots for currentRecords
 let currentWorker = null;
 
 // --- Spec lazy-load ---------------------------------------------------------
@@ -133,7 +154,8 @@ async function parseBuffer() {
   });
 }
 
-function onParseDone(msg) {
+async function onParseDone(msg) {
+  currentRecords = msg.records;
   currentRecordCount = msg.recordCount;
   if (msg.records.length > 0) {
     const first = msg.records[0];
@@ -145,6 +167,27 @@ function onParseDone(msg) {
   els.progressSec.hidden = true;
   renderSummary();
   els.summarySec.hidden = false;
+
+  // Run event detection on main thread — fast enough for ~75 K records.
+  setProgress(0, 100, 'detecting events');
+  els.progressSec.hidden = false;
+  await new Promise((r) => setTimeout(r, 0));  // let progress repaint
+  try {
+    const spec = await getSpec();
+    currentEvents = detectEvents(currentRecords, spec);
+    currentSnapshots = pickSnapshots(currentRecords, currentEvents, spec, { n: 3 });
+    renderEventsTable();
+    renderSnapshotsList();
+    renderQuantityGrid();
+    els.eventsSec.hidden = false;
+    els.snapshotsSec.hidden = currentSnapshots.length === 0;
+    els.controlsSec.hidden = false;
+  } catch (e) {
+    showError(e);
+    return;
+  } finally {
+    els.progressSec.hidden = true;
+  }
 }
 
 // --- Summary rendering ------------------------------------------------------
@@ -217,8 +260,164 @@ function resetUi() {
   hideError();
   els.summarySec.hidden = true;
   els.progressSec.hidden = true;
+  els.eventsSec.hidden = true;
+  els.snapshotsSec.hidden = true;
+  els.controlsSec.hidden = true;
+  els.chartsSec.hidden = true;
   els.fileInput.value = '';
   els.dirInput.value = '';
+}
+
+// --- Events + snapshots + controls rendering --------------------------------
+
+function formatDate(ms) {
+  return new Date(ms).toISOString();
+}
+
+function renderEventsTable() {
+  els.eventsStatus.firstChild.textContent =
+    currentEvents.length === 0
+      ? 'No events detected.'
+      : `${currentEvents.length} event(s) detected. Tick rows to include them when you click Render.`;
+  els.eventsTbody.replaceChildren();
+  for (const ev of currentEvents) {
+    const tr = document.createElement('tr');
+    tr.className = `kind-${ev.kind}`;
+    const td = (content) => {
+      const c = document.createElement('td');
+      if (content instanceof Node) c.appendChild(content);
+      else c.textContent = content;
+      return c;
+    };
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.eventId = String(ev.id);
+    cb.checked = false;
+    tr.appendChild(td(cb));
+    tr.appendChild(td(String(ev.id)));
+    tr.appendChild(td(ev.kind));
+    tr.appendChild(td(formatDate(ev.tStartMs)));
+    const durSec = Math.max(1, Math.round((ev.tEndMs - ev.tStartMs) / 1000));
+    tr.appendChild(td(`${durSec}s`));
+    tr.appendChild(td((ev.affectedPhases ?? []).join('/') || '—'));
+    tr.appendChild(td(ev.severity.toFixed(3)));
+    els.eventsTbody.appendChild(tr);
+  }
+}
+
+function renderSnapshotsList() {
+  els.snapshotsList.replaceChildren();
+  for (const s of currentSnapshots) {
+    const li = document.createElement('li');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.snapshotId = String(s.id);
+    cb.checked = true;
+    cb.style.marginRight = '0.5rem';
+    li.appendChild(cb);
+    li.appendChild(document.createTextNode(
+      `#${s.id}  ${formatDate(s.tStartMs)}  →  ${formatDate(s.tEndMs)}  ` +
+      `mean P=${(s.pTotalMeanW / 1000).toFixed(2)} kW  σ=${s.pTotalStdevW.toFixed(1)} W`
+    ));
+    els.snapshotsList.appendChild(li);
+  }
+}
+
+function renderQuantityGrid() {
+  els.quantityGrid.replaceChildren();
+  for (const q of Object.keys(FULL_QUANTITIES)) {
+    const lab = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.quantity = q;
+    cb.checked = DEFAULT_QUANTITIES.includes(q);
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(' ' + q));
+    els.quantityGrid.appendChild(lab);
+  }
+}
+
+function selectedQuantities() {
+  return [...els.quantityGrid.querySelectorAll('input[type=checkbox]:checked')]
+    .map((cb) => cb.dataset.quantity);
+}
+
+function selectedEventIds() {
+  return new Set(
+    [...els.eventsTbody.querySelectorAll('input[type=checkbox]:checked')]
+      .map((cb) => Number(cb.dataset.eventId))
+  );
+}
+
+function selectedSnapshotIds() {
+  return new Set(
+    [...els.snapshotsList.querySelectorAll('input[type=checkbox]:checked')]
+      .map((cb) => Number(cb.dataset.snapshotId))
+  );
+}
+
+async function renderAll() {
+  if (!currentRecords) return;
+  const spec = await getSpec();
+  const quantities = selectedQuantities();
+  if (quantities.length === 0) {
+    showError(new Error('Pick at least one quantity to chart.'));
+    return;
+  }
+  const preMs = Math.max(0, Number(els.preSecsInput.value) || 0) * 1000;
+  const postMs = Math.max(0, Number(els.postSecsInput.value) || 0) * 1000;
+  const evIds = selectedEventIds();
+  const snIds = selectedSnapshotIds();
+
+  els.chartsSec.hidden = false;
+  els.fullCharts.replaceChildren();
+  els.eventCharts.replaceChildren();
+  els.snapshotCharts.replaceChildren();
+
+  // Full-session charts
+  for (const q of quantities) {
+    renderChart(els.fullCharts, currentRecords, spec, q, FULL_QUANTITIES);
+  }
+
+  // Event zooms — only quantities that exist in ZOOM_QUANTITIES
+  const zoomQuantities = quantities.filter((q) => q in ZOOM_QUANTITIES);
+  els.eventChartsHead.hidden = evIds.size === 0;
+  for (const ev of currentEvents) {
+    if (!evIds.has(ev.id)) continue;
+    els.eventCharts.appendChild(makeWindowHeader(
+      `Event #${ev.id}`, `${ev.kind} @ ${formatDate(ev.tStartMs)}`,
+    ));
+    for (const q of zoomQuantities) {
+      renderChart(els.eventCharts, currentRecords, spec, q, ZOOM_QUANTITIES, {
+        startMs: ev.tStartMs - preMs,
+        endMs: ev.tEndMs + postMs,
+      });
+    }
+  }
+
+  // Snapshot zooms
+  els.snapshotChartsHead.hidden = snIds.size === 0;
+  for (const s of currentSnapshots) {
+    if (!snIds.has(s.id)) continue;
+    els.snapshotCharts.appendChild(makeWindowHeader(
+      `Snapshot #${s.id}`, `@ ${formatDate(s.tStartMs)}`,
+    ));
+    for (const q of zoomQuantities) {
+      renderChart(els.snapshotCharts, currentRecords, spec, q, ZOOM_QUANTITIES, {
+        startMs: s.tStartMs,
+        endMs: s.tEndMs,
+      });
+    }
+  }
+}
+
+function makeWindowHeader(boldText, plainText) {
+  const p = document.createElement('p');
+  const strong = document.createElement('strong');
+  strong.textContent = boldText;
+  p.appendChild(strong);
+  p.appendChild(document.createTextNode(' ' + plainText));
+  return p;
 }
 
 // --- Wire up events ---------------------------------------------------------
@@ -293,6 +492,7 @@ els.reverseToggle.addEventListener('change', () => {
   }
 });
 els.resetBtn.addEventListener('click', resetUi);
+els.renderBtn.addEventListener('click', () => renderAll().catch(showError));
 
 // Prefetch the spec so first-drop is snappy.
 getSpec().catch(() => {/* surface only when actually parsing */});

@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Fluke 3540 FC Analyzer</title>
   <link rel="stylesheet" href="vendor/pico.min.css">
+  <link rel="stylesheet" href="vendor/uPlot.min.css">
   <link rel="stylesheet" href="style.css">
+  <script src="vendor/uPlot.iife.min.js"></script>
 </head>
 <body>
   <main class="container">
@@ -52,9 +54,58 @@
         <p><small>
           The web app reads <code>trend.bin</code> entirely in your browser via a
           <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API">Web Worker</a>.
-          Nothing is uploaded. Charts (M6) and exports (M7) coming next.
+          Nothing is uploaded.
         </small></p>
       </details>
+    </section>
+
+    <section id="events-section" hidden>
+      <h2>Events</h2>
+      <p id="events-status"><small></small></p>
+      <table id="events-table" class="events-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>ID</th>
+            <th>Kind</th>
+            <th>Start (UTC)</th>
+            <th>Duration</th>
+            <th>Phases</th>
+            <th>Severity</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="events-tbody"></tbody>
+      </table>
+    </section>
+
+    <section id="snapshots-section" hidden>
+      <h2>Quiet snapshots</h2>
+      <p><small>Calmest 5-minute windows that don't overlap detected events. Useful baseline plots.</small></p>
+      <ul id="snapshots-list"></ul>
+    </section>
+
+    <section id="controls-section" hidden>
+      <h2>Render charts</h2>
+      <fieldset>
+        <legend><strong>Quantities</strong></legend>
+        <div id="quantity-grid" class="checkbox-grid"></div>
+      </fieldset>
+      <fieldset class="zoom-controls">
+        <legend><strong>Event zoom window</strong></legend>
+        <label>Pre-event (sec) <input type="number" id="pre-secs" min="0" max="3600" value="30" style="max-width: 8rem;"></label>
+        <label>Post-event (sec) <input type="number" id="post-secs" min="0" max="3600" value="60" style="max-width: 8rem;"></label>
+      </fieldset>
+      <button id="render-button" type="button">Render selected</button>
+    </section>
+
+    <section id="charts-section" hidden>
+      <h2>Charts</h2>
+      <div id="full-charts" class="charts-area"></div>
+      <h3 id="event-charts-heading" hidden>Event zooms</h3>
+      <div id="event-charts" class="charts-area"></div>
+      <h3 id="snapshot-charts-heading" hidden>Snapshot zooms</h3>
+      <div id="snapshot-charts" class="charts-area"></div>
     </section>
 
     <section id="error-section" hidden>
