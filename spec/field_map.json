@@ -72,6 +72,14 @@
     "outage_frequency_per_day": 1.0,
     "current_to_mean_ratio_alert": 5.0
   },
+  "compare_insight_rules": {
+    "voltage_drift_v_per_day": 0.1,
+    "recurring_outage_window_mins": 15,
+    "pf_degradation_min_r": 0.5,
+    "pf_degradation_min_sessions": 3,
+    "event_trend_min_r": 0.7,
+    "event_trend_min_sessions": 3
+  },
   "fields": [
     {
       "index": 0,

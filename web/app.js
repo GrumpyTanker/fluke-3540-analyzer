@@ -13,6 +13,7 @@ import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
 import { analyzeInsights } from './insights.js';
+import { analyzeCompareInsights } from './insights_compare.js';
 import {
   rangeFromHash, rangeToHash, renderRangeSelector, scopeRecordsToRange,
 } from './range_select.js';
@@ -1061,9 +1062,23 @@ els.addSessionInput.addEventListener('change', (e) => {
   if (e.target.files?.length) handleFiles(e.target.files);
   e.target.value = '';
 });
-els.compareToggleBtn.addEventListener('click', () => {
+els.compareToggleBtn.addEventListener('click', async () => {
   ms.setCompareMode(!ms.compareMode);
   renderSessionsBar();
+  // Insights swap between single-session and cross-session views.
+  if (ms.compareMode) {
+    const spec = await getSpec();
+    currentFindings = analyzeCompareInsights(ms.getAll(), spec);
+    renderInsights();
+    els.insightsSec.hidden = currentFindings.length === 0;
+  } else {
+    const active = ms.getActive();
+    if (active) {
+      currentFindings = active.findings;
+      renderInsights();
+      els.insightsSec.hidden = currentFindings.length === 0;
+    }
+  }
   renderAll().catch(showError);
 });
 els.eventsSearch?.addEventListener('input', applyEventsFilter);
