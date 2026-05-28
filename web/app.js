@@ -6,6 +6,7 @@ import { pickSnapshots } from './snapshots.js';
 import { FULL_QUANTITIES, ZOOM_QUANTITIES, renderChart } from './plots.js';
 import { buildXlsx, downloadBlob } from './xlsx_export.js';
 import { downloadBundleZip } from './bundle_export.js';
+import { looksLikeFel, unpackFel } from './fel.js';
 
 // Try sibling first (e.g. when the Pages deploy flattens spec/ next to app.js),
 // then fall back to ../spec/ for serving from the repo root.
@@ -91,7 +92,15 @@ function findInFileList(files, predicate) {
 
 async function handleFiles(fileList) {
   if (!fileList || fileList.length === 0) return;
-  // If a directory was dropped, we get many files. Find trend.bin and *-config.json
+
+  // 1) If any dropped file is a .fel, unpack in memory and use that.
+  const felFile = findInFileList(fileList, looksLikeFel);
+  if (felFile) {
+    await handleFelFile(felFile);
+    return;
+  }
+
+  // 2) Otherwise look for trend.bin (+ optional config.json) by filename.
   let trendFile = null;
   let configFile = null;
   for (const f of fileList) {
@@ -99,12 +108,12 @@ async function handleFiles(fileList) {
     if (name === 'trend.bin') trendFile = f;
     else if (name.endsWith('-config.json')) configFile = f;
   }
-  // Otherwise (single-file drop) accept the first .bin
+  // 3) Last-resort: accept the first .bin
   if (!trendFile) {
     trendFile = findInFileList(fileList, (f) => f.name.toLowerCase().endsWith('.bin'));
   }
   if (!trendFile) {
-    showError(new Error('Drop a trend.bin or a session folder containing one.'));
+    showError(new Error('Drop a trend.bin, a .fel file, or a session folder containing one.'));
     return;
   }
 
@@ -114,12 +123,27 @@ async function handleFiles(fileList) {
       const text = await configFile.text();
       currentConfig = JSON.parse(text);
     } catch (e) {
-      // non-fatal — we just won't have asset name
       console.warn('Could not parse config JSON:', e);
     }
   }
 
   await parseFile(trendFile);
+}
+
+async function handleFelFile(file) {
+  hideError();
+  els.summarySec.hidden = true;
+  els.progressSec.hidden = false;
+  setProgress(0, 100, 'unpacking .fel');
+  try {
+    const ab = await file.arrayBuffer();
+    const { trendBuffer, config } = await unpackFel(ab);
+    currentConfig = config;
+    currentArrayBuffer = trendBuffer;
+    await parseBuffer();
+  } catch (e) {
+    showError(e);
+  }
 }
 
 async function parseFile(file) {

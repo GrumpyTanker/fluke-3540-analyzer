@@ -23,11 +23,11 @@
     <section id="drop-zone" class="drop-zone" aria-label="File drop zone">
       <div class="drop-zone-inner">
         <p class="drop-icon" aria-hidden="true">⬇</p>
-        <p><strong>Drop a <code>trend.bin</code></strong> here, or the whole <code>ES.NNN/</code> folder<br>
+        <p><strong>Drop a <code>trend.bin</code>, a <code>.fel</code> bundle, or the whole <code>ES.NNN/</code> folder</strong> here<br>
           (so the asset-name from <code>ES.NNN-config.json</code> is picked up too).</p>
         <p>
-          <label for="file-input" role="button" class="secondary outline">Browse for trend.bin&hellip;</label>
-          <input type="file" id="file-input" accept=".bin,application/octet-stream" hidden>
+          <label for="file-input" role="button" class="secondary outline">Browse for file&hellip;</label>
+          <input type="file" id="file-input" accept=".bin,.fel,application/octet-stream,application/zip" hidden>
           <label for="dir-input" role="button" class="secondary outline">Pick session folder&hellip;</label>
           <input type="file" id="dir-input" webkitdirectory directory multiple hidden>
         </p>

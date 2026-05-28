@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .events import Event, detect_events
-from .parser import export_csv, find_session_files, iter_records
+from .parser import export_csv, find_session_files, iter_records, open_session
 from .plots import (
     GnuplotNotFound, render_event_zoom, render_full_session,
     render_snapshot_zoom, write_xlsx,
@@ -76,7 +76,8 @@ def build_argparser() -> argparse.ArgumentParser:
         prog="fluke-analyze", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("session_dir", type=Path, help="Path to an ES.NNN session directory")
+    ap.add_argument("session_dir", type=Path,
+                    help="Path to an ES.NNN session directory OR a .fel zip-bundle")
     ap.add_argument("-o", "--output", type=Path, default=None,
                     help="Output directory (default: <session>_out next to the session)")
 
@@ -132,23 +133,26 @@ def build_argparser() -> argparse.ArgumentParser:
 def _resolve_outdir(args: argparse.Namespace) -> Path:
     if args.output:
         return args.output
-    name = args.session_dir.name + "_out"
-    return args.session_dir.parent / name
+    name = args.session_dir.name
+    if name.lower().endswith(".fel"):
+        name = name[:-4]
+    return args.session_dir.parent / (name + "_out")
 
 
-def _parse_session(args: argparse.Namespace, outdir: Path) -> tuple[Path, Path, dict]:
+def _parse_session(args: argparse.Namespace, outdir: Path,
+                   session_dir: Path) -> tuple[Path, Path, dict]:
     """Phase 1A: parse trend.bin → session.csv + session_1min.csv."""
     full_csv = outdir / "session.csv"
     min_csv = outdir / "session_1min.csv"
     print(f"[parse] {args.session_dir}  →  {full_csv}")
     parse_result = export_csv(
-        args.session_dir, full_csv,
+        session_dir, full_csv,
         every=args.every, reverse_cts=args.reverse_cts,
     )
     print(f"        {parse_result['rows_written']:,} rows, {parse_result['columns']} cols")
     print(f"[parse] downsampling to 1-min  →  {min_csv}")
     export_csv(
-        args.session_dir, min_csv,
+        session_dir, min_csv,
         every=max(60, args.every), reverse_cts=args.reverse_cts,
     )
     return full_csv, min_csv, parse_result["config"]
@@ -323,8 +327,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = build_argparser().parse_args(argv)
 
-    if not args.session_dir.is_dir():
-        print(f"ERROR: {args.session_dir} is not a directory", file=sys.stderr)
+    if not args.session_dir.exists():
+        print(f"ERROR: {args.session_dir} does not exist", file=sys.stderr)
+        return 1
+    if not (args.session_dir.is_dir() or
+            (args.session_dir.is_file() and args.session_dir.suffix.lower() == ".fel")):
+        print(f"ERROR: {args.session_dir} is neither a directory nor a .fel file",
+              file=sys.stderr)
         return 1
 
     outdir = _resolve_outdir(args)
@@ -336,11 +345,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render_phase(args, outdir, full_csv, min_csv, events, snaps, config)
             return 0
 
-        # Phase 1: parse + detect
-        full_csv, min_csv, config = _parse_session(args, outdir)
-        trend = find_session_files(args.session_dir)["trend"]
-        events, snaps = _detect_and_save(args, outdir, trend)
-        _write_summary_txt(outdir, events, snaps, config)
+        # Phase 1: parse + detect (open_session transparently unpacks .fel)
+        with open_session(args.session_dir) as session_dir:
+            full_csv, min_csv, config = _parse_session(args, outdir, session_dir)
+            trend = find_session_files(session_dir)["trend"]
+            events, snaps = _detect_and_save(args, outdir, trend)
+            _write_summary_txt(outdir, events, snaps, config)
 
         if args.parse_only:
             print(f"[done] parse-only: {outdir}")
@@ -351,7 +361,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.plot, DEFAULT_PLOTS, FULL_QUANTITIES.keys(),
             )
             picked_events, picked_qtys = _interactive(events, snaps, full_qtys_default)
-            # Replace event list and overwrite args.plot for the render call.
             events = picked_events
             args.plot = ",".join(picked_qtys)
 

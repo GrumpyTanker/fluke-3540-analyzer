@@ -13,11 +13,14 @@ for the full column list.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import datetime as dt
 import json
 import struct
 import sys
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -123,10 +126,20 @@ def iter_records(path: Path) -> Iterator[Record]:
 
 
 def find_session_files(session_dir: Path) -> dict:
-    """Locate the four well-known files inside an ES.NNN/ directory."""
-    name = session_dir.name  # "ES.002"
+    """Locate the well-known files inside an ES.NNN/ directory.
+
+    The config-json filename usually matches the directory name (e.g.
+    ES.002-config.json), but for sessions unpacked from a .fel the
+    parent directory name on disk may not match — we glob for *-config.json
+    as a fallback.
+    """
+    name = session_dir.name
+    config_json = session_dir / f"{name}-config.json"
+    if not config_json.exists():
+        matches = list(session_dir.glob("*-config.json"))
+        config_json = matches[0] if matches else config_json
     files = {
-        "config_json":  session_dir / f"{name}-config.json",
+        "config_json":  config_json,
         "trend":        session_dir / "trend.bin",
         "trend_meta":   session_dir / "trend-meta.bin",
         "session_meta": session_dir / "session-meta.bin",
@@ -135,6 +148,51 @@ def find_session_files(session_dir: Path) -> dict:
     if not files["trend"].exists():
         raise FileNotFoundError(f"Required trend.bin not found in {session_dir}")
     return files
+
+
+@contextlib.contextmanager
+def open_session(path: Path) -> Iterator[Path]:
+    """Yield a session directory path, transparently unpacking a .fel zip if needed.
+
+    Usage:
+        with open_session(Path("session.fel")) as session_dir:
+            records = list(iter_records(session_dir / "trend.bin"))
+    """
+    if path.is_dir():
+        yield path
+        return
+    if not path.is_file():
+        raise FileNotFoundError(f"Session input does not exist: {path}")
+    if path.suffix.lower() != ".fel":
+        raise ValueError(
+            f"Session input must be an ES.NNN/ directory or a .fel zip-bundle, got: {path}"
+        )
+    with tempfile.TemporaryDirectory(prefix="fluke_fel_") as tmpname:
+        tmp = Path(tmpname)
+        with zipfile.ZipFile(path) as zf:
+            zf.extractall(tmp)
+        # The .fel typically contains a single ES.NNN/ folder; some have
+        # trend.bin at the root instead.
+        entries = list(tmp.iterdir())
+        if (tmp / "trend.bin").is_file():
+            yield tmp
+        else:
+            dirs = [e for e in entries if e.is_dir()]
+            if len(dirs) == 1:
+                yield dirs[0]
+            elif len(dirs) > 1:
+                # Multiple folders — pick the one with trend.bin
+                with_trend = [d for d in dirs if (d / "trend.bin").is_file()]
+                if len(with_trend) == 1:
+                    yield with_trend[0]
+                else:
+                    raise FileNotFoundError(
+                        f"{path}: cannot locate a single session folder inside the .fel"
+                    )
+            else:
+                raise FileNotFoundError(
+                    f"{path}: no session folder or trend.bin inside the .fel"
+                )
 
 
 def export_csv(session_dir: Path, output: Path, limit: int | None = None,

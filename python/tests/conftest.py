@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import struct
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,19 @@ def synthetic_session_dir(tmp_path_factory, synthetic_trend_path: Path) -> Path:
     d = tmp_path_factory.mktemp("ES.SYN")
     (d / "trend.bin").write_bytes(synthetic_trend_path.read_bytes())
     return d
+
+
+@pytest.fixture(scope="session")
+def synthetic_fel_path(tmp_path_factory, synthetic_trend_path: Path) -> Path:
+    """A synthetic .fel zip-bundle wrapping the synthetic trend.bin in an ES.SYN/ folder."""
+    d = tmp_path_factory.mktemp("fel_fixture")
+    fel = d / "synthetic.fel"
+    with zipfile.ZipFile(fel, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(synthetic_trend_path, arcname="ES.SYN/trend.bin")
+        # Throw in a config.json so the fallback glob is exercised too
+        zf.writestr("ES.SYN/ES.SYN-config.json",
+                    '{"asset_name": "TEST", "team_name": "synthetic", "type": "Fluke3540FC"}')
+    return fel
 
 
 # --- Per-second Record builder for event-detection tests ---------------------

@@ -16,6 +16,7 @@ from fluke_3540.parser import (
     export_csv,
     filetime_to_dt,
     iter_records,
+    open_session,
     reverse_cts_indices,
 )
 
@@ -152,6 +153,63 @@ def test_reverse_cts_indices_excludes_voltage_current(synthetic_session_dir: Pat
                  "S_a_avg_VA", "S_total_avg_VA", "freq_avg_Hz",
                  "V_THD_pct_a_avg", "I_THD_pct_a_avg", "VAh_a"):
         assert by_name[name] not in rev, f"{name} should NOT be in reverse-cts set"
+
+
+# --- .fel zip-bundle support (F1) -------------------------------------------
+
+def test_open_session_yields_directory_unchanged(synthetic_session_dir: Path):
+    with open_session(synthetic_session_dir) as session_dir:
+        assert session_dir == synthetic_session_dir
+
+
+def test_open_session_unpacks_fel(synthetic_fel_path: Path):
+    with open_session(synthetic_fel_path) as session_dir:
+        assert session_dir.is_dir()
+        assert (session_dir / "trend.bin").is_file()
+        records = list(iter_records(session_dir / "trend.bin"))
+        assert len(records) == SYNTHETIC_RECORD_COUNT
+
+
+def test_export_csv_via_fel_matches_direct_parse(
+    synthetic_fel_path: Path, synthetic_session_dir: Path, tmp_path: Path,
+):
+    from fluke_3540.parser import find_session_files
+    fel_out = tmp_path / "via_fel.csv"
+    direct_out = tmp_path / "via_dir.csv"
+    with open_session(synthetic_fel_path) as session_dir:
+        export_csv(session_dir, fel_out)
+    export_csv(synthetic_session_dir, direct_out)
+    assert fel_out.read_text() == direct_out.read_text()
+
+
+def test_open_session_rejects_unknown_file_type(tmp_path: Path):
+    bad = tmp_path / "not_a_session.txt"
+    bad.write_text("hello")
+    with pytest.raises(ValueError, match="ES.NNN/ directory or a .fel"):
+        with open_session(bad):
+            pass
+
+
+def test_open_session_rejects_missing_path(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        with open_session(tmp_path / "does_not_exist"):
+            pass
+
+
+def test_find_session_files_globs_config_json_fallback(
+    synthetic_fel_path: Path,
+):
+    """The .fel unpacks into ES.SYN/ — config json filename should still be picked up."""
+    from fluke_3540.parser import find_session_files
+    with open_session(synthetic_fel_path) as session_dir:
+        files = find_session_files(session_dir)
+        assert files["trend"].is_file()
+        # config_json should glob-match ES.SYN-config.json
+        assert files["config_json"].is_file()
+
+
+# Need SYNTHETIC_RECORD_COUNT for the .fel test
+from conftest import SYNTHETIC_RECORD_COUNT  # noqa: E402
 
 
 def test_export_csv_reverse_cts_negates_correct_columns(
