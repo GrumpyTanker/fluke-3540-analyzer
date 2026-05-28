@@ -2,13 +2,21 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Sequence
 
-from .parser import _parse_reverse_cts_arg, export_csv, open_session
-from .plots import GnuplotNotFound
+from .events import detect_events
+from .insights import analyze as analyze_insights
+from .insights_compare import analyze_compare, to_jsonable as compare_finding_to_jsonable
+from .parser import _parse_reverse_cts_arg, export_csv, from_csv, iter_records, open_session
+from .plots import (
+    GnuplotNotFound, WeasyPrintNotInstalled,
+    write_compare_html_report, write_pdf_report,
+)
 from .plots.compare import COMPARE_QUANTITIES, render_compare
+from .snapshots import pick_snapshots
 
 
 def build_compare_argparser() -> argparse.ArgumentParser:
@@ -32,6 +40,10 @@ def build_compare_argparser() -> argparse.ArgumentParser:
                     help="Apply same reverse-CTS phases to every session")
     ap.add_argument("--format", choices=("png", "svg"), default="png",
                     help="Image format (default png)")
+    ap.add_argument("--no-html", action="store_true",
+                    help="Skip the self-contained compare HTML report")
+    ap.add_argument("--pdf", action="store_true",
+                    help="Also render compare.pdf via weasyprint")
     return ap
 
 
@@ -92,15 +104,42 @@ def compare_main(argv: Sequence[str] | None = None) -> int:
 
     # Phase 1: parse each session into outdir/session_N.csv
     session_csvs: list[Path] = []
+    session_records: list[list] = []
     for i, session_input in enumerate(args.sessions):
         csv_out = outdir / f"session_{i}.csv"
         print(f"[parse] {session_input}  →  {csv_out}  (label: {labels[i]})")
-        with open_session(session_input) as session_dir:
-            result = export_csv(
-                session_dir, csv_out, reverse_cts=reverse_cts,
-            )
-        print(f"        {result['rows_written']:,} rows")
+        if session_input.is_file() and session_input.suffix.lower() == ".csv":
+            if session_input.resolve() != csv_out.resolve():
+                csv_out.write_bytes(session_input.read_bytes())
+            session_records.append(list(from_csv(csv_out)))
+        else:
+            with open_session(session_input) as session_dir:
+                result = export_csv(
+                    session_dir, csv_out, reverse_cts=reverse_cts,
+                )
+                from .parser import find_session_files
+                trend = find_session_files(session_dir)["trend"]
+                session_records.append(list(iter_records(trend)))
+            print(f"        {result['rows_written']:,} rows")
         session_csvs.append(csv_out)
+
+    # Phase 1b: run single-session detection + cross-session insights
+    print("[detect] computing per-session events + cross-session insights…")
+    session_packs = []
+    for label, recs in zip(labels, session_records):
+        events = detect_events(recs)
+        findings = analyze_insights(recs, events)
+        session_packs.append({
+            "label": label, "records": recs,
+            "events": events, "findings": findings,
+        })
+    cross_findings = analyze_compare(session_packs)
+    (outdir / "compare_insights.json").write_text(
+        json.dumps([compare_finding_to_jsonable(f) for f in cross_findings], indent=2),
+        encoding="utf-8",
+    )
+    print(f"         {len(cross_findings)} cross-session finding(s) "
+          f"→ compare_insights.json")
 
     try:
         # Phase 2: overlay charts + summary CSV
@@ -114,6 +153,29 @@ def compare_main(argv: Sequence[str] | None = None) -> int:
     except GnuplotNotFound as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
+
+    # Phase 3: HTML / PDF reports
+    html_path = outdir / "compare_report.html"
+    if not args.no_html:
+        print(f"[render] compare HTML → {html_path}")
+        write_compare_html_report(
+            html_path, output_dir=outdir,
+            session_stats=[{"label": lbl, **s}
+                           for lbl, s in zip(labels, cmp.per_session_stats)],
+            findings=cross_findings,
+        )
+
+    if args.pdf:
+        pdf_path = outdir / "compare_report.pdf"
+        if not html_path.is_file():
+            print("ERROR: --pdf requires the compare HTML report (don't combine with --no-html)",
+                  file=sys.stderr)
+            return 2
+        print(f"[render] compare PDF → {pdf_path}")
+        try:
+            write_pdf_report(html_path, pdf_path)
+        except WeasyPrintNotInstalled as e:
+            print(f"ERROR: {e}", file=sys.stderr)
 
     print(f"[done] {outdir}")
     return 0

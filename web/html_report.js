@@ -237,3 +237,124 @@ export function downloadHtmlReport(opts) {
   downloadBlob(blob, `${name}_report.html`);
   return { chartCount: (html.match(/<figure>/g) ?? []).length };
 }
+
+function compareSummaryTableHtml(sessionStats) {
+  if (!sessionStats?.length) return '';
+  const metrics = [
+    ['records',         'Records'],
+    ['importedKwh',     'Imported (kWh)'],
+    ['exportedKwh',     'Exported (kWh)'],
+    ['peakImportKw',    'Peak import (kW)'],
+    ['peakExportKw',    'Peak export (kW)'],
+    ['peakCurrentA',    'Peak current (A)'],
+    ['eventCount',      'Events detected'],
+  ];
+  const head = '<thead><tr><th>Metric</th>' +
+    sessionStats.map((s) => `<th>${esc(s.label)}</th>`).join('') + '</tr></thead>';
+  const body = metrics.map(([k, lbl]) => {
+    const cells = [`<td>${esc(lbl)}</td>`];
+    for (const s of sessionStats) {
+      const v = s[k];
+      if (typeof v === 'number') {
+        cells.push(`<td>${k === 'records' || k === 'eventCount' ? v.toLocaleString() : v.toFixed(3)}</td>`);
+      } else {
+        cells.push('<td></td>');
+      }
+    }
+    return '<tr>' + cells.join('') + '</tr>';
+  }).join('\n');
+  return '<table>' + head + '<tbody>' + body + '</tbody></table>';
+}
+
+function compareInsightsHtml(findings) {
+  if (!findings?.length) return '';
+  const out = ['<h2>Cross-session insights</h2>'];
+  for (const f of findings) {
+    const actions = (f.recommendedActions ?? []).map((a) => `<li>${esc(a)}</li>`).join('');
+    const actionsBlock = actions ? `<p class="meta">Recommended</p><ul>${actions}</ul>` : '';
+    out.push(
+      `<section class="insight ${esc(f.severity)}">` +
+      `<h3>${esc(f.headline)}</h3>` +
+      `<p class="meta">${esc(f.kind)} · ${esc(f.severity)} · sessions: ${esc((f.sessionLabels ?? []).join(', '))}</p>` +
+      `<p>${esc(f.detail)}</p>` +
+      `${actionsBlock}` +
+      `</section>`
+    );
+  }
+  return out.join('\n');
+}
+
+function summarizeSession(s, spec) {
+  const fi = new Map(spec.fields.map((f) => [f.name, f.index]));
+  const whIdx = fi.get('Wh_total');
+  const pIdx  = fi.get('P_total_avg_W');
+  const iaIdx = fi.get('I_a_avg_A');
+  const ibIdx = fi.get('I_b_avg_A');
+  const icIdx = fi.get('I_c_avg_A');
+  let whFwd = 0, whRev = 0, pPos = 0, pNeg = 0, iPeak = 0;
+  for (const r of s.records) {
+    const wh = r.floats[whIdx];
+    const p = r.floats[pIdx];
+    if (Number.isFinite(wh)) {
+      if (wh > 0) whFwd += wh; else if (wh < 0) whRev += wh;
+    }
+    if (Number.isFinite(p)) {
+      if (p > pPos) pPos = p;
+      if (p < pNeg) pNeg = p;
+    }
+    iPeak = Math.max(iPeak, r.floats[iaIdx] || 0, r.floats[ibIdx] || 0, r.floats[icIdx] || 0);
+  }
+  return {
+    label: s.label,
+    records: s.records.length,
+    importedKwh: whFwd / 1000,
+    exportedKwh: whRev / 1000,
+    peakImportKw: pPos / 1000,
+    peakExportKw: pNeg / 1000,
+    peakCurrentA: iPeak,
+    eventCount: (s.events ?? []).length,
+  };
+}
+
+export function buildCompareReportHtml({ title, sessions, spec, findings }) {
+  const stats = sessions.map((s) => summarizeSession(s, spec));
+  // Compare-mode page has overlay charts in #full-charts.
+  const charts = (() => {
+    const container = document.getElementById('full-charts');
+    if (!container) return [];
+    const out = [];
+    for (const w of container.querySelectorAll('article.chart-wrapper')) {
+      const canvas = w.querySelector('canvas');
+      const t = w.querySelector('h3')?.textContent ?? 'chart';
+      if (canvas) out.push({ section: 'overlay', title: t, dataUrl: canvas.toDataURL('image/png') });
+    }
+    return out;
+  })();
+  const body = [
+    `<h1>${esc(title)}</h1>`,
+    '<h2>Per-session summary</h2>',
+    compareSummaryTableHtml(stats),
+    compareInsightsHtml(findings),
+    charts.length
+      ? '<h2>Overlay charts</h2>' + charts.map(
+          (c) => `<figure><img src="${c.dataUrl}" alt="${esc(c.title)}"><figcaption>${esc(c.title)}</figcaption></figure>`
+        ).join('\n')
+      : '',
+    `<footer>Generated ${esc(new Date().toISOString())} by ` +
+    '<a href="https://github.com/GrumpyTanker/fluke-3540-analyzer">fluke-3540-analyzer</a></footer>',
+  ];
+  return (
+    '<!DOCTYPE html>\n' +
+    "<html lang='en'><head><meta charset='utf-8'>" +
+    `<title>${esc(title)}</title>` +
+    `<style>${CSS}</style></head><body>\n` +
+    body.join('\n') +
+    '\n</body></html>\n'
+  );
+}
+
+export function downloadCompareHtmlReport(opts) {
+  const html = buildCompareReportHtml(opts);
+  const blob = new Blob([html], { type: 'text/html' });
+  downloadBlob(blob, 'fluke_compare_report.html');
+}

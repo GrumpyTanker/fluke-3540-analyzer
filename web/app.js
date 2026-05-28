@@ -8,7 +8,7 @@ import { buildXlsx, downloadBlob } from './xlsx_export.js';
 import { downloadBundleZip } from './bundle_export.js';
 import { looksLikeFel, unpackFel } from './fel.js';
 import { looksLikeCsv, parseCsvBuffer } from './csv_input.js';
-import { downloadHtmlReport } from './html_report.js';
+import { downloadCompareHtmlReport, downloadHtmlReport } from './html_report.js';
 import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
@@ -618,6 +618,16 @@ async function exportPdf() {
 async function exportHtmlReport() {
   if (!currentRecords) return;
   const spec = await getSpec();
+  if (ms.compareMode && ms.canCompare()) {
+    // Compare-mode HTML uses the per-session summary + cross-session findings.
+    downloadCompareHtmlReport({
+      title: 'Fluke 3540 FC — Multi-session Comparison',
+      sessions: ms.getAll(),
+      spec,
+      findings: currentFindings,  // cross-session findings while in compare mode
+    });
+    return;
+  }
   const scoped = scopeRecordsToRange(currentRecords, currentRange);
   // When scoping, also scope events/findings to overlap the range.
   const scopedEvents = currentRange
