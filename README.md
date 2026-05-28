@@ -35,6 +35,10 @@ The browser parses the file locally in a Web Worker, runs event detection, and s
 ## Python CLI — for scripting + publication charts
 
 ```bash
+# From PyPI (v0.2.0+)
+pip install fluke-3540-analyzer
+
+# Or from source for development
 git clone https://github.com/GrumpyTanker/fluke-3540-analyzer
 cd fluke-3540-analyzer
 pip install -e "python/[dev]"
@@ -82,8 +86,10 @@ fluke-analyze path/to/ES.NNN -o output/ \
 | `--every K` | `1` | Emit every K-th record into the CSV |
 | `--format` | `png` | `png` or `svg` |
 | `--no-xlsx` | | Skip the XLSX workbook |
+| `--no-html` | | Skip the self-contained HTML report (default writes `report.html`) |
 | `--no-overview` | | Skip the 2x2 overview multiplot |
 | `--nominal-ln-v V` | auto | Override nominal L-N voltage (auto-inferred otherwise) |
+| `--json` | | Emit a single JSON blob to stdout (no charts, no logs). |
 
 ### Output layout (`--auto`)
 
@@ -103,6 +109,16 @@ output/
 ```
 
 `--plot-only` consumes `session.csv`, `session_1min.csv`, and `events.json` from a previous `--parse-only` run — useful for iterating on chart styles without re-parsing 55 MB of binary data.
+
+### Multi-session comparison
+
+```bash
+fluke-analyze compare SESSION1 SESSION2 [...] -o OUT --labels "before,after"
+```
+
+Overlays selected quantities across sessions on the same axes (aligned by
+relative-time-from-session-start) and writes a side-by-side
+`compare_summary.csv`. See [`docs/COMPARE.md`](docs/COMPARE.md).
 
 ## Event detection
 

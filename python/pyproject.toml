@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fluke-3540-analyzer"
-version = "0.1.0.dev0"
+version = "0.2.0"
 description = "Parser, event detector, and chart generator for Fluke 3540 FC three-phase power-quality sessions. See https://github.com/GrumpyTanker/fluke-3540-analyzer."
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -39,6 +39,12 @@ Issues = "https://github.com/GrumpyTanker/fluke-3540-analyzer/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# Bundle the field-map spec into the wheel. The release workflow copies
+# spec/field_map.json (at the repo root) into src/fluke_3540/spec/ before
+# building, so the installed package is self-contained.
+fluke_3540 = ["spec/field_map.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

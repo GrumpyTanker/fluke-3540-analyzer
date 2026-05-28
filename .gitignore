@@ -69,3 +69,8 @@ ES.[0-9][0-9][0-9]/
 
 # Logs
 *.log
+
+# Build-time bundled spec copy (canonical spec lives at repo-root /spec/).
+# The release workflow copies it in before `python -m build`; locally a
+# dev may have a copy here too, but it must not be committed.
+python/src/fluke_3540/spec/

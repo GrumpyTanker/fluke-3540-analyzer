@@ -29,14 +29,27 @@ from typing import Iterable, Iterator
 # --- Spec loading -------------------------------------------------------------
 
 def _find_field_map() -> Path:
-    """Locate spec/field_map.json by walking up from this module."""
+    """Locate spec/field_map.json.
+
+    Looks first at a sibling ``spec/`` next to this module — the layout
+    produced by the release workflow when bundling the spec into the
+    distributed wheel. Falls back to walking up from this file to find
+    ``<repo>/spec/field_map.json``, which is what editable installs and
+    source checkouts have.
+    """
     here = Path(__file__).resolve()
+    # 1) Installed-wheel layout: site-packages/fluke_3540/spec/field_map.json
+    bundled = here.parent / "spec" / "field_map.json"
+    if bundled.is_file():
+        return bundled
+    # 2) Source / editable layout: walk up to find repo-root spec/
     for parent in here.parents:
         candidate = parent / "spec" / "field_map.json"
         if candidate.is_file():
             return candidate
     raise FileNotFoundError(
-        "Could not locate spec/field_map.json. Expected it at the repo root."
+        "Could not locate spec/field_map.json. Expected it bundled in the "
+        "package or at the repo root."
     )
 
 

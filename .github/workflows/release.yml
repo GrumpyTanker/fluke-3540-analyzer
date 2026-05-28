@@ -1,0 +1,45 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/fluke-3540-analyzer
+    permissions:
+      id-token: write  # required for PyPI trusted publishing (OIDC)
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tooling
+        run: pip install build
+
+      - name: Bundle the canonical spec into the package
+        # spec/field_map.json lives at the repo root so both Python and JS
+        # parsers can share it. Copy it into the package before building so
+        # the installed wheel is self-contained.
+        run: |
+          mkdir -p python/src/fluke_3540/spec
+          cp spec/field_map.json python/src/fluke_3540/spec/field_map.json
+
+      - name: Build sdist + wheel
+        working-directory: python
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist/
+          # Trusted publisher — no token needed.
+          # Configure at https://pypi.org/manage/account/publishing/
