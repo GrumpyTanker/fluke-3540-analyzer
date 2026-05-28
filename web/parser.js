@@ -30,12 +30,60 @@ export function filetimeToDate(filetimeBigInt) {
   return new Date(filetimeToUnixMs(filetimeBigInt));
 }
 
+const VALID_PHASES = new Set(['a', 'b', 'c']);
+
+/**
+ * Extract the phase letter from a reverse-CTS-eligible field name.
+ * `P_a_avg_W` → 'a', `P_total_avg_W` → 'total', `V_LN_a_avg_V` → null.
+ */
+function fieldPhase(spec, name) {
+  if (!spec.reverse_cts_prefixes.some((p) => name.startsWith(p))) return null;
+  const parts = name.split('_');
+  return parts.length >= 2 ? parts[1] : null;
+}
+
+/**
+ * Compute the set of field indices whose sign should be flipped.
+ * @param {object} spec
+ * @param {boolean|string[]} phases - true = all, false/[] = none,
+ *                                    iterable of {'a','b','c'} = those phases (+ totals)
+ */
+export function computeReverseCtsIndices(spec, phases = true) {
+  const out = new Set();
+  if (phases === true) {
+    for (const f of spec.fields) {
+      if (spec.reverse_cts_prefixes.some((p) => f.name.startsWith(p))) out.add(f.index);
+    }
+    return out;
+  }
+  if (!phases) return out;
+  if (!Array.isArray(phases) && typeof phases[Symbol.iterator] !== 'function') {
+    throw new FlukeBinaryError(`reverseCts must be a boolean or iterable of phases, got ${phases}`);
+  }
+  const phaseSet = new Set([...phases].map((p) => String(p).trim().toLowerCase()));
+  for (const p of phaseSet) {
+    if (!VALID_PHASES.has(p)) {
+      throw new FlukeBinaryError(`Invalid reverse-CTS phase: ${p}. Use a/b/c only.`);
+    }
+  }
+  if (phaseSet.size === 0) return out;
+  for (const f of spec.fields) {
+    const ph = fieldPhase(spec, f.name);
+    if (ph === null) continue;
+    if (phaseSet.has(ph)) out.add(f.index);
+    else if (ph === 'total') out.add(f.index);
+  }
+  return out;
+}
+
 /**
  * Validate and pre-compute lookup tables from spec/field_map.json.
  * @param {object} spec - Parsed spec content.
+ * @param {object} [opts]
+ * @param {boolean|string[]} [opts.reverseCts] - which phases to flip (default true = all)
  * @returns {{recordMagic: Uint8Array, recordSize: number, headerBytes: number, dataFloats: number, fields: Array, reverseCtsIndices: Set<number>}}
  */
-export function buildIndex(spec) {
+export function buildIndex(spec, opts = {}) {
   const recordMagic = new Uint8Array(spec.record_magic);
   const fields = spec.fields.slice();
   const seenIndices = new Set();
@@ -48,10 +96,8 @@ export function buildIndex(spec) {
     }
     seenIndices.add(f.index);
   }
-  const reverseCtsIndices = new Set(
-    fields
-      .filter((f) => spec.reverse_cts_prefixes.some((p) => f.name.startsWith(p)))
-      .map((f) => f.index)
+  const reverseCtsIndices = computeReverseCtsIndices(
+    spec, opts.reverseCts !== undefined ? opts.reverseCts : true
   );
   return {
     recordMagic,
@@ -80,7 +126,10 @@ function bytesEqual(a, b) {
  */
 export function parseTrendBin(arrayBuffer, spec, opts = {}) {
   const { reverseCts = false, onProgress = null } = opts;
-  const idx = buildIndex(spec);
+  // The reverseCts indices depend on which phases the caller wants flipped,
+  // so we build the index with the resolved set up-front.
+  const idx = buildIndex(spec, { reverseCts });
+  const flip = reverseCts ? idx.reverseCtsIndices : null;
   const view = new DataView(arrayBuffer);
   const totalBytes = view.byteLength;
   const totalRecords = Math.floor(totalBytes / idx.recordSize);
@@ -99,15 +148,9 @@ export function parseTrendBin(arrayBuffer, spec, opts = {}) {
     }
     // Header: magic(4) | start_filetime_hi(4) | start_filetime_lo(4)
     //                  | end_filetime_hi(4)   | end_filetime_lo(4)   | reserved(4)
-    // FLUKE writes BOTH halves as little-endian uint32s, BUT in Python we
-    // reconstruct as (hi << 32) | lo. That matches a little-endian uint64
-    // read of the 8-byte block ONLY if the two uint32s are stored as
-    // (lo_word, hi_word). Check carefully: the original code does:
-    //   start_hi, start_lo = struct.unpack_from("<II", chunk, 4)
-    // which unpacks two LE-uint32s as (lo_word_in_memory, next_word_in_memory).
-    // So in memory the layout is [hi_word_LE][lo_word_LE], where
-    // hi_word_LE = first uint32 (becomes start_hi), lo_word_LE = second (start_lo).
-    // Final value = (hi << 32) | lo. To match this, we read the same way:
+    // FLUKE writes both halves as little-endian uint32s; the FIRST word in
+    // memory is the high 32 bits, SECOND is the low. Reconstruct with
+    // (hi << 32) | lo to match Python's struct.unpack_from('<II', ...).
     const startHi = BigInt(view.getUint32(offset + 4, true));
     const startLo = BigInt(view.getUint32(offset + 8, true));
     const endHi = BigInt(view.getUint32(offset + 12, true));
@@ -118,7 +161,7 @@ export function parseTrendBin(arrayBuffer, spec, opts = {}) {
     const floatsBase = offset + idx.headerBytes;
     for (let i = 0; i < idx.dataFloats; i++) {
       let v = view.getFloat32(floatsBase + i * 4, true);
-      if (reverseCts && idx.reverseCtsIndices.has(i)) {
+      if (flip && flip.has(i)) {
         v = -v;
       }
       floats[i] = v;

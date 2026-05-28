@@ -45,10 +45,10 @@
       <div id="summary-grid" class="summary-grid"></div>
 
       <fieldset>
-        <label>
-          <input type="checkbox" id="reverse-cts-toggle" role="switch">
-          Reverse CTs (negate P / Q / PF / DPF / Wh / VARh — use if iFlex probes installed backwards)
-        </label>
+        <legend><strong>Reverse CTs</strong> <small>— flip sign of P / Q / PF / DPF / Wh / VARh on selected phases (totals follow)</small></legend>
+        <label><input type="checkbox" id="reverse-cts-a" data-phase="a"> Phase A</label>
+        <label><input type="checkbox" id="reverse-cts-b" data-phase="b"> Phase B</label>
+        <label><input type="checkbox" id="reverse-cts-c" data-phase="c"> Phase C</label>
       </fieldset>
 
       <details>

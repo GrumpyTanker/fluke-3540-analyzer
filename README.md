@@ -78,7 +78,7 @@ fluke-analyze path/to/ES.NNN -o output/ \
 | `--events IDS` | all | Comma-separated event IDs to render |
 | `--plot QTYS` | `voltage,current,power,thd,pf,frequency` | Quantities to chart |
 | `--snapshots N` | `3` | Number of quiet snapshots to pick |
-| `--reverse-cts` | off | Negate P/Q/PF/DPF/Wh/VARh — see `docs/CT_REVERSAL.md` |
+| `--reverse-cts [PHASES]` | off | Negate P/Q/PF/DPF/Wh/VARh. Bare flag = all phases; pass `a` or `a,c` for selected phases (totals follow). See `docs/CT_REVERSAL.md` |
 | `--every K` | `1` | Emit every K-th record into the CSV |
 | `--format` | `png` | `png` or `svg` |
 | `--no-xlsx` | | Skip the XLSX workbook |

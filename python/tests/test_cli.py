@@ -51,7 +51,8 @@ def test_argparser_filter_flags():
     assert args.to_time == dt.datetime(2024, 1, 13, 23, 0, 0, tzinfo=dt.timezone.utc)
     assert args.events == "1,3,5"
     assert args.plot == "voltage,current"
-    assert args.reverse_cts is True
+    # --reverse-cts is now nargs='?' const='all', so bare flag yields 'all'
+    assert args.reverse_cts == "all"
     assert args.every == 60
     assert args.snapshots == 2
     assert args.format == "svg"

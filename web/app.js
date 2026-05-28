@@ -26,7 +26,9 @@ const els = {
   progressLabel:      document.getElementById('progress-label'),
   summarySec:         document.getElementById('summary-section'),
   summaryGrid:        document.getElementById('summary-grid'),
-  reverseToggle:      document.getElementById('reverse-cts-toggle'),
+  reverseA:           document.getElementById('reverse-cts-a'),
+  reverseB:           document.getElementById('reverse-cts-b'),
+  reverseC:           document.getElementById('reverse-cts-c'),
   errorSec:           document.getElementById('error-section'),
   errorMsg:           document.getElementById('error-message'),
   resetBtn:           document.getElementById('reset-button'),
@@ -183,8 +185,16 @@ async function parseBuffer() {
     type: 'parse',
     spec,
     arrayBuffer: currentArrayBuffer,
-    reverseCts: els.reverseToggle.checked,
+    reverseCts: selectedReversePhases(),
   });
+}
+
+function selectedReversePhases() {
+  const phases = [];
+  if (els.reverseA?.checked) phases.push('a');
+  if (els.reverseB?.checked) phases.push('b');
+  if (els.reverseC?.checked) phases.push('c');
+  return phases.length === 0 ? false : phases;
 }
 
 async function onParseDone(msg) {
@@ -263,7 +273,9 @@ function renderSummary() {
     add('End (UTC)',   new Date(t1).toISOString());
     add('Duration',    formatDuration(t1 - t0));
   }
-  add('Reverse CTs',   els.reverseToggle.checked ? 'on' : 'off');
+  const rev = selectedReversePhases();
+  add('Reverse CTs', rev === false ? 'off' :
+    rev.length === 3 ? 'all phases' : `phase(s) ${rev.join(', ')}`);
 
   els.summaryGrid.replaceWith(dl);
   dl.id = 'summary-grid';
@@ -536,14 +548,13 @@ function walkEntry(entry, out) {
 
 els.fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
 els.dirInput.addEventListener('change', (e) => handleFiles(e.target.files));
-els.reverseToggle.addEventListener('change', () => {
-  // Re-parse using the cached ArrayBuffer when the user flips the toggle.
-  if (currentArrayBuffer) {
-    parseBuffer();
-  } else {
-    renderSummary();
-  }
-});
+for (const cb of [els.reverseA, els.reverseB, els.reverseC]) {
+  cb?.addEventListener('change', () => {
+    // Re-parse the cached buffer whenever the phase selection changes.
+    if (currentArrayBuffer) parseBuffer();
+    else renderSummary();
+  });
+}
 els.resetBtn.addEventListener('click', resetUi);
 els.renderBtn.addEventListener('click', () => renderAll().catch(showError));
 els.exportXlsxBtn.addEventListener('click', () => exportXlsx().catch(showError));

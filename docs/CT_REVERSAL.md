@@ -56,25 +56,32 @@ shared by both implementations.
 ## CLI
 
 ```bash
+# Flip all three phases (the original v0.1 behavior)
 fluke-analyze path/to/ES.NNN -o out/ --reverse-cts
+
+# Flip only phase A — useful when one probe is backwards and the others are fine
+fluke-analyze path/to/ES.NNN -o out/ --reverse-cts a
+
+# Flip phases A and C
+fluke-analyze path/to/ES.NNN -o out/ --reverse-cts a,c
 ```
 
-The Summary at the end of the CLI run prints
-`--reverse-cts: negated N columns (P*/Q*/PF*/DPF*/Wh*/VARh*)` so you can
-confirm the flip was applied.
+When you flip a subset of phases, the corresponding `*_total_*` columns
+(`P_total_avg_W`, `Q_total_avg_VAR`, etc.) are also negated — totals are
+sums across phases, so an asymmetric flip changes the total too.
+
+The Summary line at the end of the CLI run prints which phases were
+flipped and how many columns were affected.
 
 ## Web app
 
-Toggle the **Reverse CTs** switch in the Session summary panel after the
-parse completes. The app re-parses the cached file buffer in-place; no
-re-drop needed.
+In the Session summary panel after the parse completes, tick any
+combination of the **Phase A / Phase B / Phase C** checkboxes under
+"Reverse CTs". The app re-parses the cached file buffer in-place
+whenever the selection changes; no re-drop needed.
 
 ## When NOT to use it
 
 - Sites with bidirectional flow (solar PV, battery storage, V2G chargers)
   where genuinely negative P_total values are expected — `--reverse-cts`
   would just hide real export events.
-- When only one of the three CTs is reversed. Flipping all three corrects
-  the global sign but leaves the per-phase relationships wrong. In that
-  case, you need a fix that's currently out of scope (`v0.2` candidate:
-  per-phase reverse-CT mask).

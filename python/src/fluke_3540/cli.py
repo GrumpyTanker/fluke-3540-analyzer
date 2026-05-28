@@ -17,7 +17,10 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .events import Event, detect_events
-from .parser import export_csv, find_session_files, iter_records, open_session
+from .parser import (
+    _parse_reverse_cts_arg, export_csv, find_session_files, iter_records,
+    open_session,
+)
 from .plots import (
     GnuplotNotFound, render_event_zoom, render_full_session,
     render_snapshot_zoom, write_xlsx,
@@ -113,8 +116,11 @@ def build_argparser() -> argparse.ArgumentParser:
                     help="Number of normal-operation snapshots to pick (default 3)")
 
     # Parse options
-    ap.add_argument("--reverse-cts", action="store_true",
-                    help="Negate P/Q/PF/DPF/Wh/VARh to correct backwards iFlex CTs")
+    ap.add_argument("--reverse-cts", nargs="?", const="all", default=None,
+                    metavar="PHASES",
+                    help="Negate P/Q/PF/DPF/Wh/VARh for backwards iFlex CTs. "
+                         "Bare flag = all phases; pass a comma list like 'a,c' to "
+                         "only flip those phases (plus totals).")
     ap.add_argument("--every", type=int, default=1, metavar="K",
                     help="Emit every K-th record into the CSV (default 1, all)")
 
@@ -144,16 +150,17 @@ def _parse_session(args: argparse.Namespace, outdir: Path,
     """Phase 1A: parse trend.bin → session.csv + session_1min.csv."""
     full_csv = outdir / "session.csv"
     min_csv = outdir / "session_1min.csv"
+    reverse_cts = _parse_reverse_cts_arg(args.reverse_cts)
     print(f"[parse] {args.session_dir}  →  {full_csv}")
     parse_result = export_csv(
         session_dir, full_csv,
-        every=args.every, reverse_cts=args.reverse_cts,
+        every=args.every, reverse_cts=reverse_cts,
     )
     print(f"        {parse_result['rows_written']:,} rows, {parse_result['columns']} cols")
     print(f"[parse] downsampling to 1-min  →  {min_csv}")
     export_csv(
         session_dir, min_csv,
-        every=max(60, args.every), reverse_cts=args.reverse_cts,
+        every=max(60, args.every), reverse_cts=reverse_cts,
     )
     return full_csv, min_csv, parse_result["config"]
 

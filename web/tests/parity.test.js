@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import {
   FILETIME_EPOCH_DIFF_MS,
   buildIndex,
+  computeReverseCtsIndices,
   filetimeToUnixMs,
   parseTrendBin,
 } from '../parser.js';
@@ -135,4 +136,56 @@ test('parseTrendBin: reverseCts negates correct columns', () => {
 test('parseTrendBin: throws on bad magic', () => {
   const corrupted = new Uint8Array(744).buffer; // all zeros, no magic
   assert.throws(() => parseTrendBin(corrupted, spec), /Bad magic/);
+});
+
+// --- F2: per-phase reverse-CT ----------------------------------------------
+
+test('computeReverseCtsIndices: true = all phases (legacy behaviour)', () => {
+  const all = computeReverseCtsIndices(spec, true);
+  const noArg = computeReverseCtsIndices(spec); // default = true
+  assert.deepEqual([...all].sort(), [...noArg].sort());
+  // Should include phase A, B, C, and total flavours
+  const byName = new Map(spec.fields.map((f) => [f.name, f.index]));
+  for (const n of ['P_a_avg_W', 'P_b_avg_W', 'P_c_avg_W', 'P_total_avg_W',
+                   'Wh_a', 'Wh_b', 'Wh_c', 'Wh_total']) {
+    assert.ok(all.has(byName.get(n)), `${n} should be in all-phase set`);
+  }
+});
+
+test('computeReverseCtsIndices: false = empty', () => {
+  assert.equal(computeReverseCtsIndices(spec, false).size, 0);
+  assert.equal(computeReverseCtsIndices(spec, []).size, 0);
+});
+
+test('computeReverseCtsIndices: phase A only flips A + totals, not B/C', () => {
+  const rev = computeReverseCtsIndices(spec, ['a']);
+  const byName = new Map(spec.fields.map((f) => [f.name, f.index]));
+  // flipped
+  for (const n of ['P_a_avg_W', 'Q_a_avg_VAR', 'Wh_a', 'P_total_avg_W', 'Wh_total']) {
+    assert.ok(rev.has(byName.get(n)), `${n} should flip`);
+  }
+  // NOT flipped
+  for (const n of ['P_b_avg_W', 'P_c_avg_W', 'Wh_b', 'Wh_c',
+                   'V_LN_a_avg_V', 'I_a_avg_A', 'S_a_avg_VA']) {
+    assert.ok(!rev.has(byName.get(n)), `${n} should NOT flip`);
+  }
+});
+
+test('computeReverseCtsIndices: invalid phase throws', () => {
+  assert.throws(() => computeReverseCtsIndices(spec, ['z']), /Invalid reverse-CTS phase/);
+});
+
+test('parseTrendBin: reverseCts=["a"] matches Python phase-A-only behaviour', () => {
+  const plain = parseTrendBin(loadFixture(), spec, { reverseCts: false });
+  const aOnly = parseTrendBin(loadFixture(), spec, { reverseCts: ['a'] });
+  const byName = new Map(spec.fields.map((f) => [f.name, f.index]));
+  // Phase A flips
+  const pa = byName.get('P_a_avg_W');
+  assert.equal(aOnly.records[0].floats[pa], -plain.records[0].floats[pa]);
+  // Phase B does not
+  const pb = byName.get('P_b_avg_W');
+  assert.equal(aOnly.records[0].floats[pb], plain.records[0].floats[pb]);
+  // Totals do (since A is part of total)
+  const ptot = byName.get('P_total_avg_W');
+  assert.equal(aOnly.records[0].floats[ptot], -plain.records[0].floats[ptot]);
 });

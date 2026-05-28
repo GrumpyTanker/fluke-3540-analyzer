@@ -155,6 +155,81 @@ def test_reverse_cts_indices_excludes_voltage_current(synthetic_session_dir: Pat
         assert by_name[name] not in rev, f"{name} should NOT be in reverse-cts set"
 
 
+def test_reverse_cts_indices_empty_when_falsy():
+    assert reverse_cts_indices(False) == frozenset()
+    assert reverse_cts_indices(None) == frozenset()
+    assert reverse_cts_indices([]) == frozenset()
+
+
+def test_reverse_cts_indices_per_phase_a_only():
+    rev = reverse_cts_indices(["a"])
+    by_name = {f.name: f.index for f in FIELDS}
+    # Phase A columns flipped
+    assert by_name["P_a_avg_W"] in rev
+    assert by_name["Q_a_avg_VAR"] in rev
+    assert by_name["Wh_a"] in rev
+    # Totals also flipped (asymmetric flip changes the sum)
+    assert by_name["P_total_avg_W"] in rev
+    assert by_name["Wh_total"] in rev
+    # Phase B / C columns NOT flipped
+    assert by_name["P_b_avg_W"] not in rev
+    assert by_name["P_c_avg_W"] not in rev
+    assert by_name["Wh_b"] not in rev
+    assert by_name["Wh_c"] not in rev
+    # Sign-independent columns not flipped
+    assert by_name["V_LN_a_avg_V"] not in rev
+    assert by_name["I_a_avg_A"] not in rev
+    assert by_name["S_a_avg_VA"] not in rev
+
+
+def test_reverse_cts_indices_per_phase_a_and_c():
+    rev = reverse_cts_indices(["a", "c"])
+    by_name = {f.name: f.index for f in FIELDS}
+    for n in ("P_a_avg_W", "P_c_avg_W", "Q_a_avg_VAR", "Q_c_avg_VAR",
+              "Wh_a", "Wh_c", "P_total_avg_W"):
+        assert by_name[n] in rev, f"{n} should be flipped"
+    for n in ("P_b_avg_W", "Q_b_avg_VAR", "Wh_b"):
+        assert by_name[n] not in rev, f"{n} should NOT be flipped"
+
+
+def test_reverse_cts_indices_all_true_matches_default():
+    assert reverse_cts_indices(True) == reverse_cts_indices()
+    assert reverse_cts_indices(["a", "b", "c"]) == reverse_cts_indices()
+
+
+def test_reverse_cts_indices_invalid_phase_raises():
+    with pytest.raises(ValueError, match="Invalid reverse-CTS phases"):
+        reverse_cts_indices(["a", "z"])
+
+
+def test_export_csv_per_phase_reverse_cts(
+    synthetic_session_dir: Path, tmp_path: Path,
+):
+    """Only flagged phases (and totals) should flip."""
+    out_a = tmp_path / "phase_a.csv"
+    out_plain = tmp_path / "plain.csv"
+    export_csv(synthetic_session_dir, out_a, reverse_cts=["a"])
+    export_csv(synthetic_session_dir, out_plain, reverse_cts=False)
+
+    import csv as _csv
+    with out_a.open() as fh:
+        a_rows = list(_csv.reader(fh))
+    with out_plain.open() as fh:
+        plain_rows = list(_csv.reader(fh))
+    headers = a_rows[0]
+    flip_set = reverse_cts_indices(["a"])
+    by_name = {f.name: f.index for f in FIELDS}
+    for col_idx, col_name in enumerate(headers[3:], start=3):
+        plain_val = float(plain_rows[1][col_idx])
+        a_val = float(a_rows[1][col_idx])
+        if by_name[col_name] in flip_set:
+            assert a_val == pytest.approx(-plain_val), \
+                f"{col_name} should be negated under reverse_cts=['a']"
+        else:
+            assert a_val == pytest.approx(plain_val), \
+                f"{col_name} should NOT be negated under reverse_cts=['a']"
+
+
 # --- .fel zip-bundle support (F1) -------------------------------------------
 
 def test_open_session_yields_directory_unchanged(synthetic_session_dir: Path):

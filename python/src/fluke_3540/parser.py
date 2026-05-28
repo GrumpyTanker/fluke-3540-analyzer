@@ -23,7 +23,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterable, Iterator
 
 
 # --- Spec loading -------------------------------------------------------------
@@ -66,7 +66,7 @@ def _load_spec(path: Path | None = None) -> tuple[dict, list[FieldSpec], frozens
     return raw, fields, reverse_indices
 
 
-SPEC, FIELDS, _REVERSE_CTS_INDICES = _load_spec()
+SPEC, FIELDS, _REVERSE_CTS_INDICES_ALL = _load_spec()
 
 RECORD_MAGIC = bytes(SPEC["record_magic"])
 RECORD_SIZE = SPEC["record_size"]
@@ -75,13 +75,63 @@ DATA_FLOATS = SPEC["data_floats"]
 FILETIME_EPOCH = dt.datetime(1601, 1, 1, tzinfo=dt.timezone.utc)
 
 
-def reverse_cts_indices() -> frozenset[int]:
-    """Set of field indices whose sign should be flipped when --reverse-cts is set.
+_VALID_PHASES = frozenset({"a", "b", "c"})
 
-    Covers P/P1/Q/Q1/PF/DPF/Wh/VARh — the signed quantities that depend on
-    iFlex CT probe orientation. I/S/VA/V/THD/freq are sign-independent.
+
+def _field_phase(name: str) -> str | None:
+    """Return the phase letter for a reverse-CTS-eligible field, or None.
+
+    Reverse-CTS-eligible names look like ``P_a_avg_W``, ``Q1_total_avg_VAR``,
+    ``Wh_b``, etc. — the second underscore-delimited token is the phase
+    (``a``/``b``/``c``/``total``). For any field whose name doesn't start
+    with a reverse-CTS prefix, returns None.
     """
-    return _REVERSE_CTS_INDICES
+    if not name.startswith(tuple(SPEC["reverse_cts_prefixes"])):
+        return None
+    parts = name.split("_")
+    if len(parts) < 2:
+        return None
+    return parts[1]
+
+
+def reverse_cts_indices(phases: bool | Iterable[str] | None = True) -> frozenset[int]:
+    """Field indices whose sign should be flipped to correct reversed iFlex CTs.
+
+    Args:
+        phases: ``True`` (default) flips every reverse-CTS-eligible column on
+                every phase, matching the original all-or-nothing flag.
+                An iterable subset of ``{"a", "b", "c"}`` flips just those
+                phases (plus the matching ``*_total_*`` columns, since the
+                total includes the flipped phase). ``False`` / ``None`` /
+                empty iterable returns an empty set.
+
+    Covers P/P1/Q/Q1/PF/DPF/Wh/VARh — the signed quantities that depend
+    on probe orientation. I/S/VA/V/THD/freq are sign-independent.
+    """
+    if phases is True:
+        return _REVERSE_CTS_INDICES_ALL
+    if not phases:
+        return frozenset()
+    phase_set = {p.strip().lower() for p in phases}
+    bad = phase_set - _VALID_PHASES
+    if bad:
+        raise ValueError(
+            f"Invalid reverse-CTS phases: {sorted(bad)}. Must be subset of {sorted(_VALID_PHASES)}"
+        )
+    if not phase_set:
+        return frozenset()
+    indices: set[int] = set()
+    for f in FIELDS:
+        ph = _field_phase(f.name)
+        if ph is None:
+            continue
+        if ph in phase_set:
+            indices.add(f.index)
+        elif ph == "total":
+            # totals are sums of phase values — flipping any one phase
+            # changes the total, so flip it too.
+            indices.add(f.index)
+    return frozenset(indices)
 
 
 # --- Parsing ------------------------------------------------------------------
@@ -196,7 +246,8 @@ def open_session(path: Path) -> Iterator[Path]:
 
 
 def export_csv(session_dir: Path, output: Path, limit: int | None = None,
-               every: int = 1, reverse_cts: bool = False) -> dict:
+               every: int = 1,
+               reverse_cts: bool | Iterable[str] = False) -> dict:
     files = find_session_files(session_dir)
     config = {}
     if files["config_json"].exists():
@@ -204,7 +255,9 @@ def export_csv(session_dir: Path, output: Path, limit: int | None = None,
 
     headers = ["record_index", "timestamp_utc", "window_end_utc"]
     headers += [f.name for f in FIELDS]
-    flip = reverse_cts_indices() if reverse_cts else frozenset()
+    # reverse_cts may be True (all phases), False (none), or an iterable of
+    # phase letters; reverse_cts_indices() handles all of those.
+    flip = reverse_cts_indices(reverse_cts if reverse_cts else False)
 
     written = 0
     first_ts = None
@@ -240,6 +293,26 @@ def export_csv(session_dir: Path, output: Path, limit: int | None = None,
     }
 
 
+def _parse_reverse_cts_arg(raw: str | None) -> bool | list[str]:
+    """Convert the CLI's --reverse-cts argument value into the API form.
+
+    None         -> False (no flip)
+    "all"        -> True  (all phases, returned by ``nargs='?' const='all'``)
+    "a" / "a,c"  -> ["a"] / ["a", "c"]
+    """
+    if raw is None:
+        return False
+    if raw == "all":
+        return True
+    phases = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    bad = [p for p in phases if p not in _VALID_PHASES]
+    if bad:
+        raise SystemExit(
+            f"--reverse-cts: bad phase(s) {bad}. Use any subset of a, b, c."
+        )
+    return phases
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -251,25 +324,33 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=None, help="Cap output rows")
     ap.add_argument("--every", type=int, default=1,
                     help="Emit every N-th record (1 = all). Use 60 for 1 row/min.")
-    ap.add_argument("--reverse-cts", action="store_true",
+    ap.add_argument("--reverse-cts", nargs="?", const="all", default=None,
+                    metavar="PHASES",
                     help="Negate P/P1/Q/Q1/PF/DPF/Wh/VARh to correct for physically "
-                         "reversed iFlex CT probes. I/S/VA/V columns are unchanged.")
+                         "reversed iFlex CT probes. Bare flag = all phases; pass a "
+                         "comma list like 'a,c' to only flip those phases (plus totals).")
     args = ap.parse_args(argv)
 
     if not args.session_dir.is_dir():
         print(f"ERROR: {args.session_dir} is not a directory", file=sys.stderr)
         return 1
     output = args.output or args.session_dir.with_suffix(".csv")
+    reverse_cts_arg = _parse_reverse_cts_arg(args.reverse_cts)
     result = export_csv(
         args.session_dir, output,
-        limit=args.limit, every=args.every, reverse_cts=args.reverse_cts,
+        limit=args.limit, every=args.every, reverse_cts=reverse_cts_arg,
     )
     print(f"Wrote {output}")
     print(f"  rows: {result['rows_written']}")
     print(f"  columns: {result['columns']}")
     print(f"  time range (UTC): {result['first_ts']} .. {result['last_ts']}")
     if result["reverse_cts"]:
-        print(f"  --reverse-cts: negated {len(result['reversed_columns'])} columns "
+        flipped_phases = (
+            "all phases" if reverse_cts_arg is True
+            else "phase(s) " + ",".join(sorted(reverse_cts_arg))
+        )
+        print(f"  --reverse-cts ({flipped_phases}): negated "
+              f"{len(result['reversed_columns'])} columns "
               "(P*/Q*/PF*/DPF*/Wh*/VARh*)")
     cfg = result["config"]
     if cfg:
