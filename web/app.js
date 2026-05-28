@@ -9,6 +9,7 @@ import { downloadBundleZip } from './bundle_export.js';
 import { looksLikeFel, unpackFel } from './fel.js';
 import { downloadHtmlReport } from './html_report.js';
 import { downloadPdfReport } from './pdf_export.js';
+import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { analyzeInsights } from './insights.js';
 import {
   rangeFromHash, rangeToHash, renderRangeSelector, scopeRecordsToRange,
@@ -181,9 +182,32 @@ async function parseBuffer() {
   hideError();
   els.summarySec.hidden = true;
   els.progressSec.hidden = false;
-  setProgress(0, 100, 'parsing');
 
   const spec = await getSpec();
+  const reverseCts = selectedReversePhases();
+
+  // Cache key includes reverse-CTS choice so different toggles get separate
+  // cache slots (cheap, avoids re-parsing for each phase combo).
+  let cacheKey = null;
+  try {
+    setProgress(0, 100, 'hashing');
+    const baseHash = await hashBuffer(currentArrayBuffer);
+    const revTag = reverseCts === false ? 'none'
+      : Array.isArray(reverseCts) ? reverseCts.sort().join('') : 'all';
+    cacheKey = `${baseHash}:${revTag}`;
+    const hit = await getCached(cacheKey);
+    if (hit && hit.records) {
+      setProgress(100, 100, 'cache hit — skipped parse');
+      // Use cached config if our companion-file lookup didn't find one
+      if (!currentConfig && hit.config) currentConfig = hit.config;
+      await onParseDone({ records: hit.records, recordCount: hit.records.length, cached: true });
+      return;
+    }
+  } catch (e) {
+    console.warn('Cache lookup failed, parsing fresh:', e);
+  }
+
+  setProgress(0, 100, 'parsing');
   if (currentWorker) currentWorker.terminate();
   currentWorker = new Worker(new URL('./parser_worker.js', import.meta.url),
                              { type: 'module' });
@@ -192,7 +216,11 @@ async function parseBuffer() {
     if (msg.type === 'progress') {
       setProgress(msg.done, msg.total, `parsing record ${msg.done.toLocaleString()} / ${msg.total.toLocaleString()}`);
     } else if (msg.type === 'done') {
-      onParseDone(msg);
+      onParseDone(msg).then(() => {
+        if (cacheKey && msg.records) {
+          putCached(cacheKey, msg.records, currentConfig).catch(() => {});
+        }
+      });
     } else if (msg.type === 'error') {
       showError(new Error(msg.message));
     }
@@ -204,7 +232,7 @@ async function parseBuffer() {
     type: 'parse',
     spec,
     arrayBuffer: currentArrayBuffer,
-    reverseCts: selectedReversePhases(),
+    reverseCts,
   });
 }
 
@@ -835,6 +863,14 @@ document.querySelectorAll('input[name=theme]').forEach((r) => {
   });
 });
 loadTheme();
+
+// "Clear cache" link in the footer
+document.getElementById('clear-cache-link')?.addEventListener('click', async (e) => {
+  e.preventDefault();
+  const ok = await clearCache();
+  e.target.textContent = ok ? 'Cache cleared' : 'Cache clear failed';
+  setTimeout(() => { e.target.textContent = 'Clear cache'; }, 2000);
+});
 
 // Prefetch the spec so first-drop is snappy.
 getSpec().catch(() => {/* surface only when actually parsing */});
