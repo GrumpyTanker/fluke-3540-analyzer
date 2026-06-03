@@ -350,20 +350,221 @@ def _detect_and_save(args: argparse.Namespace, outdir: Path,
     return events, snaps, findings, store
 
 
+def _infer_nominal_ln_v(store: ColumnStore, fallback: float | None) -> float:
+    """Best-effort nominal L-N voltage for ITIC residual %."""
+    if fallback:
+        return fallback
+    from statistics import median
+    pooled = []
+    for name in ("V_LN_a_avg_V", "V_LN_b_avg_V", "V_LN_c_avg_V"):
+        col = store.col(name)
+        for v in col:
+            if v > 50.0:
+                pooled.append(v)
+    return median(pooled) if pooled else 277.0
+
+
+def _parse_markers(args: argparse.Namespace, time_shift) -> list:
+    """Collect markers from --mark and --marks, applying the time shift.
+
+    Marker times are given on the meter's raw timeline; we add the same shift
+    used everywhere so they land on the anchored wall-clock.
+    """
+    from .analysis import Marker
+    markers: list[Marker] = []
+    for spec in (args.mark or []):
+        iso, _, label = spec.partition("=")
+        try:
+            t = _parse_time(iso.strip())
+        except ValueError:
+            print(f"[mark] could not parse time in {spec!r} — skipped", file=sys.stderr)
+            continue
+        markers.append(Marker(time=t + time_shift, label=label.strip() or iso.strip()))
+    if args.marks:
+        try:
+            with args.marks.open(newline="", encoding="utf-8") as fh:
+                reader = _csv.DictReader(fh)
+                for row in reader:
+                    raw = row.get("time") or row.get("timestamp") or ""
+                    try:
+                        t = _parse_time(raw.strip())
+                    except ValueError:
+                        continue
+                    markers.append(Marker(time=t + time_shift,
+                                          label=(row.get("label") or "").strip() or raw))
+        except OSError as e:
+            print(f"[marks] could not read {args.marks}: {e}", file=sys.stderr)
+    return markers
+
+
+def _augment_events_itic(outdir: Path, events: Sequence[Event],
+                         nominal_ln_v: float) -> None:
+    """Rewrite events.json with an `itic` block on each dip/outage/swell."""
+    from .analysis import event_itic
+    payload = []
+    for ev in events:
+        d = _event_to_json(ev)
+        info = event_itic(ev, nominal_ln_v)
+        if info:
+            d["itic"] = info
+        payload.append(d)
+    (outdir / "events.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _write_stats(outdir: Path, store: ColumnStore) -> dict:
+    from .analysis import whole_session_stats
+    stats = whole_session_stats(store)
+    (outdir / "stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    # CSV: one row per channel
+    with (outdir / "stats.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["channel", "unit", "count", "min", "p1", "p5", "median",
+                    "mean", "p95", "p99", "max", "stdev"])
+        for name, d in stats.items():
+            if name.startswith("_"):
+                continue
+            w.writerow([name, d["unit"], d["count"], d["min"], d["p1"], d["p5"],
+                        d["median"], d["mean"], d["p95"], d["p99"], d["max"],
+                        d["stdev"]])
+    print(f"[stats] wrote stats.json + stats.csv")
+    return stats
+
+
+def _write_markers(outdir: Path, markers, events: Sequence[Event]) -> None:
+    from .analysis import correlate_markers
+    corr = correlate_markers(markers, events)
+    (outdir / "markers.json").write_text(json.dumps(corr, indent=2), encoding="utf-8")
+    print(f"[mark] {len(markers)} marker(s) correlated → markers.json")
+    for c in corr:
+        ne = c["nearest_event"]
+        if ne:
+            print(f"        '{c['label']}' nearest {ne['kind']} #{ne['id']} "
+                  f"(offset {ne['offset_secs']:+.1f}s)")
+
+
+def _write_tod(outdir: Path, store: ColumnStore, args: argparse.Namespace) -> None:
+    from .analysis import parse_tod_window, time_of_day_profile
+    window = parse_tod_window(args.tod_profile)
+    rows = time_of_day_profile(store, window=window, bin_minutes=max(1, args.tod_bin))
+    with (outdir / "time_of_day_profile.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["bin", "n", "n_days", "p_avg_kW", "p_min_kW", "p_max_kW",
+                    "v_avg_V", "v_min_V", "v_max_V", "i_avg_A", "i_min_A", "i_max_A"])
+        for r in rows:
+            w.writerow([r["bin"], r["n"], r["n_days"], r["p_avg_kW"], r["p_min_kW"],
+                        r["p_max_kW"], r["v_avg_V"], r["v_min_V"], r["v_max_V"],
+                        r["i_avg_A"], r["i_min_A"], r["i_max_A"]])
+    print(f"[tod] time-of-day profile ({args.tod_profile}) → "
+          f"time_of_day_profile.csv ({len(rows)} bins)")
+
+
+def _run_split_by(args: argparse.Namespace, outdir: Path, store: ColumnStore,
+                  events: Sequence[Event], config: dict,
+                  nominal_ln_v: float) -> None:
+    """Emit a full per-bucket report + buckets_summary.csv roll-up."""
+    from .analysis import (assign_buckets, bucket_label, bucket_summary_row,
+                           parse_period, slice_store)
+    period = parse_period(args.split_by)
+    buckets = assign_buckets(store, period)
+    print(f"[split] --split-by {args.split_by}: {len(buckets)} bucket(s)")
+
+    summary_rows = []
+    for (start, lo, hi) in buckets:
+        label = bucket_label(start, period)
+        sub = slice_store(store, lo, hi)
+        bdir = outdir / label
+        bdir.mkdir(parents=True, exist_ok=True)
+        # Per-bucket events (filed under their t_start bucket; flag spanners).
+        b_end = start + dt.timedelta(seconds=period.seconds)
+        bucket_events = [e for e in events if start <= e.t_start < b_end]
+        spanning = [e for e in bucket_events if e.t_end >= b_end]
+        # Per-bucket CSV slice (from the in-memory store columns).
+        _write_bucket_csv(bdir / "session.csv", sub)
+        # Per-bucket events.json with ITIC
+        from .analysis import event_itic
+        ev_payload = []
+        for e in bucket_events:
+            d = _event_to_json(e)
+            info = event_itic(e, nominal_ln_v)
+            if info:
+                d["itic"] = info
+            if e in spanning:
+                d["spans_bucket_boundary"] = True
+            ev_payload.append(d)
+        (bdir / "events.json").write_text(json.dumps(ev_payload, indent=2),
+                                          encoding="utf-8")
+        # Per-bucket summary.txt
+        b_findings = analyze_insights(sub, bucket_events, [], config)
+        b_snaps = pick_snapshots(sub, bucket_events, n=1)
+        _write_summary_txt(bdir, bucket_events, b_snaps, b_findings, config)
+        # Per-bucket XLSX (best-effort)
+        if not args.no_xlsx:
+            try:
+                write_xlsx(bdir / "session.csv", bdir / "report.xlsx",
+                           config=config, csv_per_second_path=bdir / "session.csv")
+            except Exception as e:  # pragma: no cover - xlsx best-effort
+                print(f"[split]   xlsx for {label} failed: {e}", file=sys.stderr)
+        summary_rows.append(bucket_summary_row(label, sub, bucket_events))
+
+    # Roll-up summary CSV
+    with (outdir / "buckets_summary.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["bucket", "records", "V_min_V", "V_avg_V", "V_max_V",
+                    "I_max_A", "kWh", "n_outages", "n_dips", "n_swells",
+                    "worst_PF", "peak_kW"])
+        for r in summary_rows:
+            w.writerow([r["bucket"], r["records"], f"{r['V_min_V']:.1f}",
+                        f"{r['V_avg_V']:.1f}", f"{r['V_max_V']:.1f}",
+                        f"{r['I_max_A']:.1f}", f"{r['kWh']:.2f}", r["n_outages"],
+                        r["n_dips"], r["n_swells"], f"{r['worst_PF']:.3f}",
+                        f"{r['peak_kW']:.2f}"])
+    print(f"[split] wrote buckets_summary.csv ({len(summary_rows)} rows) + "
+          f"per-bucket reports under {outdir}/<label>/")
+
+
+def _write_bucket_csv(path: Path, sub: ColumnStore) -> None:
+    """Write a CSV for a bucket slice from the store's retained columns."""
+    cols = list(sub.columns)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(["timestamp_utc", "window_end_utc", *cols])
+        col_arrays = [sub.col(c) for c in cols]
+        for i in range(sub.n):
+            w.writerow([sub.start(i).isoformat(), sub.end(i).isoformat(),
+                        *[ca[i] for ca in col_arrays]])
+
+
 def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
                         store: ColumnStore,
                         events: Sequence[Event],
                         findings: Sequence[Finding],
                         config: dict,
-                        full_csv: Path, min_csv: Path) -> None:
+                        full_csv: Path, min_csv: Path) -> dict:
     """Run the round-2 analysis features that depend on the in-memory store.
 
-    Each feature is opt-in via its flag; this is the single hook the CLI calls
-    after detection. Features are filled in incrementally (markers, per-bucket
-    summary, stats, time-of-day, split-by). Kept side-effect-light so it is a
-    no-op when no relevant flags are set.
+    Each feature is opt-in via its flag. Returns the stats dict (or {}) so the
+    renderer can surface a Statistics sheet.
     """
-    return None
+    nominal_ln_v = _infer_nominal_ln_v(store, args.nominal_ln_v)
+    # ITIC always augments events.json (cheap, high-value for the deliverable).
+    _augment_events_itic(outdir, events, nominal_ln_v)
+
+    stats: dict = {}
+    if not getattr(args, "no_stats", False):
+        stats = _write_stats(outdir, store)
+
+    time_shift = store.time_shift
+    markers = _parse_markers(args, time_shift)
+    if markers:
+        _write_markers(outdir, markers, events)
+
+    if getattr(args, "tod_profile", None):
+        _write_tod(outdir, store, args)
+
+    if getattr(args, "split_by", None):
+        _run_split_by(args, outdir, store, events, config, nominal_ln_v)
+
+    return stats
 
 
 def _write_summary_txt(outdir: Path, events: Sequence[Event],
