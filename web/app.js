@@ -13,7 +13,7 @@ import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
 import { ColumnStore } from './column_store.js';
-import { wholeSessionStats, timeOfDayProfile, detectCtReversal, ctReversalNotice } from './analysis.js';
+import { wholeSessionStats, timeOfDayProfile, detectCtReversal, ctReversalNotice, ieee519Compliance, sarfiIndices } from './analysis.js';
 import { buildNarrative } from './narrative.js';
 import {
   computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
@@ -507,6 +507,17 @@ function recordsForExport(spec) {
 let currentStats = null;       // last computed whole_session_stats (for exports)
 let currentTodRows = null;     // last computed time-of-day profile (for exports)
 let currentNarrative = null;   // executive-summary narrative (Feature E)
+let currentPq = null;          // IEEE 519 + SARFI power-quality (Feature F)
+
+// Median non-outage L-N voltage for SARFI residual %, from the stats sketch
+// (falls back to 277 V if voltage stats are unavailable).
+function inferNominalForPq(src) {
+  if (currentStats && currentStats.V_LN_a_avg_V) {
+    const m = currentStats.V_LN_a_avg_V.median;
+    if (Number.isFinite(m) && m > 50) return m;
+  }
+  return 277.0;
+}
 
 // CT-reversal banner (Feature C): warn when real power is sustained-negative on
 // a load and reverse-CTs isn't already applied. The Apply button ticks all
@@ -599,7 +610,26 @@ function renderStatsPanel(spec) {
     `${th.sec_overcurrent} s (${(th.pct_overcurrent ?? 0).toFixed(2)}%).`;
   note.appendChild(us);
 
-  wrap.replaceChildren(table, note);
+  // IEEE 519 + SARFI power-quality summary (Feature F).
+  currentPq = null;
+  const pqP = document.createElement('p');
+  pqP.className = 'stats-pq';
+  try {
+    const ieee = ieee519Compliance(src, spec);
+    const sarfi = sarfiIndices(currentEvents, inferNominalForPq(src));
+    currentPq = { ieee519: ieee, sarfi };
+    const vv = ieee.voltage;
+    const pqs = document.createElement('small');
+    pqs.textContent =
+      `IEEE 519 V_THD p95 (limit ${ieee.limit_v_thd_pct.toFixed(0)}%): ` +
+      `a=${vv.a.p95.toFixed(1)}% b=${vv.b.p95.toFixed(1)}% c=${vv.c.p95.toFixed(1)}% — ` +
+      `${ieee.all_voltage_compliant ? 'COMPLIANT' : 'NON-COMPLIANT'}. ` +
+      `SARFI-90=${sarfi['SARFI-90']}, SARFI-70=${sarfi['SARFI-70']}, ` +
+      `SARFI-10=${sarfi['SARFI-10']} (${sarfi.events_considered} voltage events).`;
+    pqP.appendChild(pqs);
+  } catch (_) { /* THD columns may be absent on some inputs */ }
+
+  wrap.replaceChildren(table, note, pqP);
   if (status) status.firstChild
     ? (status.firstChild.textContent = `${Object.keys(currentStats).length - 1} channels over ${(th.total_records || 0).toLocaleString()} records.`)
     : (status.textContent = '');
@@ -1044,6 +1074,7 @@ async function exportHtmlReport() {
     findings: scopedFindings,
     wholeStats: currentRange ? null : currentStats,
     narrative: currentRange ? null : currentNarrative,
+    pq: currentRange ? null : currentPq,
   });
 }
 

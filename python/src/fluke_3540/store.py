@@ -45,6 +45,9 @@ STORE_COLUMNS: tuple[str, ...] = (
     "P_total_avg_W", "S_total_avg_VA", "Q_total_avg_VAR", "PF_total_avg",
     # Per-row energy (used by per-bucket kWh roll-ups)
     "Wh_total",
+    # THD per phase (IEEE 519) — V and I, avg only
+    "V_THD_pct_a_avg", "V_THD_pct_b_avg", "V_THD_pct_c_avg",
+    "I_THD_pct_a_avg", "I_THD_pct_b_avg", "I_THD_pct_c_avg",
 )
 
 _FIELD_INDEX = {f.name: f.index for f in FIELDS}

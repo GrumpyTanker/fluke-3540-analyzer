@@ -16,8 +16,8 @@ import json
 from pathlib import Path
 
 from fluke_3540.analysis import (
-    classify_itic, detect_ct_reversal, event_itic, time_of_day_profile,
-    whole_session_stats,
+    classify_itic, detect_ct_reversal, event_itic, ieee519_compliance,
+    sarfi_indices, time_of_day_profile, whole_session_stats,
 )
 from fluke_3540.events import Event
 from fluke_3540.insights import Finding
@@ -47,6 +47,10 @@ def _build_session() -> ColumnStore:
         overrides[i]["I_a_avg_A"] = 100.0 + (i % 11)
         overrides[i]["PF_total_avg"] = 0.90 + (i % 5) * 0.01
         overrides[i]["freq_avg_Hz"] = 60.0 + ((i % 3) - 1) * 0.01
+        overrides[i]["V_THD_pct_a_avg"] = 3.0 + (i % 13) * 0.5   # spans planning/limit
+        overrides[i]["V_THD_pct_b_avg"] = 2.0 + (i % 5) * 0.2
+        overrides[i]["V_THD_pct_c_avg"] = 4.5 + (i % 3) * 0.1
+        overrides[i]["I_THD_pct_a_avg"] = 8.0 + (i % 7)
     plant_window(overrides, 100, 119, {"V_LN_a_avg_V": 240.0})   # undervoltage 20 s
     plant_window(overrides, 200, 204, {"I_c_avg_A": 850.0})      # overcurrent 5 s
     recs = make_records(600, overrides=overrides)
@@ -108,6 +112,10 @@ def test_emit_analysis_golden():
         duration_secs=604800.0,
     )
 
+    # IEEE 519 on the main session; SARFI on the sample events.
+    ieee519 = ieee519_compliance(store)
+    sarfi = sarfi_indices(sample_events, 277.0)
+
     golden = {
         "stats": stats,
         "tod_rows": tod,
@@ -116,6 +124,8 @@ def test_emit_analysis_golden():
         "event_itic": event_itic_out,
         "ct_reversal": ct,
         "narrative": narrative,
+        "ieee519": ieee519,
+        "sarfi": sarfi,
     }
     GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     GOLDEN_PATH.write_text(json.dumps(golden, indent=2), encoding="utf-8")

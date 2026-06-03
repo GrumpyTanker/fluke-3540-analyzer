@@ -258,6 +258,64 @@ export function eventItic(ev, nominalLnV) {
   };
 }
 
+// --- IEEE 519 THD + IEEE 1159 / SARFI (Feature F) --------------------------
+
+export const IEEE519_V_THD_LIMIT_PCT = 8.0;
+export const IEEE519_V_THD_PLANNING_PCT = 5.0;
+
+export function ieee519Compliance(source, spec) {
+  const src = asColumnSource(source, spec);
+  const out = {
+    limit_v_thd_pct: IEEE519_V_THD_LIMIT_PCT,
+    planning_v_thd_pct: IEEE519_V_THD_PLANNING_PCT,
+    voltage: {},
+    current: {},
+  };
+  let allCompliant = true;
+  for (const ph of ['a', 'b', 'c']) {
+    const vcol = src.column(`V_THD_pct_${ph}_avg`);
+    const sk = new PercentileSketch(0.0, 100.0, 2000);
+    for (let i = 0; i < vcol.length; i++) sk.add(vcol[i]);
+    const p95 = sk.n ? sk.quantile(0.95) : 0.0;
+    const compliant = p95 <= IEEE519_V_THD_LIMIT_PCT;
+    allCompliant = allCompliant && compliant;
+    out.voltage[ph] = {
+      p95,
+      limit: IEEE519_V_THD_LIMIT_PCT,
+      planning: IEEE519_V_THD_PLANNING_PCT,
+      compliant,
+      exceeds_planning: p95 > IEEE519_V_THD_PLANNING_PCT,
+    };
+    const icol = src.column(`I_THD_pct_${ph}_avg`);
+    const ski = new PercentileSketch(0.0, 200.0, 2000);
+    for (let i = 0; i < icol.length; i++) ski.add(icol[i]);
+    out.current[ph] = { p95: ski.n ? ski.quantile(0.95) : 0.0 };
+  }
+  out.all_voltage_compliant = allCompliant;
+  return out;
+}
+
+export const SARFI_THRESHOLDS = [90, 80, 70, 50, 10];
+
+export function sarfiIndices(events, nominalLnV) {
+  const counts = {};
+  for (const x of SARFI_THRESHOLDS) counts[`SARFI-${x}`] = 0;
+  let considered = 0;
+  for (const ev of events) {
+    let residualPct;
+    if (ev.kind === 'dip') residualPct = ev.severity * 100.0;
+    else if (ev.kind === 'outage') residualPct = nominalLnV ? (ev.severity / nominalLnV) * 100.0 : 0.0;
+    else continue;
+    considered += 1;
+    for (const x of SARFI_THRESHOLDS) {
+      if (residualPct < x) counts[`SARFI-${x}`] += 1;
+    }
+  }
+  counts.events_considered = considered;
+  counts.nominal_ln_v = nominalLnV;
+  return counts;
+}
+
 // --- Time-bucket partitioning (--split-by) ---------------------------------
 
 export function parsePeriod(text) {

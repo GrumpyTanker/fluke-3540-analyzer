@@ -580,9 +580,21 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     _augment_events_itic(outdir, events, nominal_ln_v)
 
     # CT-reversal status snapshot for reports/web (cheap; one pass).
-    from .analysis import detect_ct_reversal
+    from .analysis import detect_ct_reversal, ieee519_compliance, sarfi_indices
     ct = detect_ct_reversal(store)
     (outdir / "ct_reversal.json").write_text(json.dumps(ct, indent=2), encoding="utf-8")
+
+    # IEEE 519 (THD) + IEEE 1159 / SARFI power-quality (Feature F).
+    pq = {
+        "ieee519": ieee519_compliance(store),
+        "sarfi": sarfi_indices(events, nominal_ln_v),
+    }
+    (outdir / "pq_standards.json").write_text(json.dumps(pq, indent=2), encoding="utf-8")
+    v = pq["ieee519"]["voltage"]
+    print(f"[pq] IEEE 519 V_THD p95: a={v['a']['p95']:.1f}% b={v['b']['p95']:.1f}% "
+          f"c={v['c']['p95']:.1f}% (limit {pq['ieee519']['limit_v_thd_pct']:.0f}%) — "
+          f"{'COMPLIANT' if pq['ieee519']['all_voltage_compliant'] else 'NON-COMPLIANT'}; "
+          f"SARFI-90={pq['sarfi']['SARFI-90']}")
 
     stats: dict = {}
     if not getattr(args, "no_stats", False):

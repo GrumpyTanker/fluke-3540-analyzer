@@ -218,7 +218,21 @@ function wholeStatsTableHtml(wholeStats) {
     `<tbody>${rows.join('')}</tbody></table>${note}`;
 }
 
-export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [], wholeStats = null, narrative = null }) {
+// IEEE 519 + SARFI power-quality block (Feature F).
+function pqHtml(pq) {
+  if (!pq) return '';
+  const v = pq.ieee519.voltage;
+  const s = pq.sarfi;
+  const verdict = pq.ieee519.all_voltage_compliant ? 'COMPLIANT' : 'NON-COMPLIANT';
+  return '<h2>Power quality (IEEE 519 / 1159)</h2>' +
+    `<p>IEEE 519 voltage THD p95 (limit ${pq.ieee519.limit_v_thd_pct.toFixed(0)}%): ` +
+    `A=${v.a.p95.toFixed(1)}%, B=${v.b.p95.toFixed(1)}%, C=${v.c.p95.toFixed(1)}% — ` +
+    `<strong>${verdict}</strong>.</p>` +
+    `<p>SARFI: 90=${s['SARFI-90']}, 80=${s['SARFI-80']}, 70=${s['SARFI-70']}, ` +
+    `50=${s['SARFI-50']}, 10=${s['SARFI-10']} (${s.events_considered} voltage events).</p>`;
+}
+
+export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [], wholeStats = null, narrative = null, pq = null }) {
   const energy = summarizeRecords(records, spec);
   const stats = {
     'Records (per-second)': records.length.toLocaleString(),
@@ -239,6 +253,7 @@ export function buildReportHtml({ title, config, records, spec, events, snapshot
     '<h2>Summary</h2>',
     summaryDlHtml(stats, config),
     wholeStatsTableHtml(wholeStats),
+    pqHtml(pq),
     insightsHtml(findings),
     '<h2>Events</h2>',
     eventsTableHtml(events),

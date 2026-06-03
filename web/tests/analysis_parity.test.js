@@ -13,6 +13,7 @@ import {
   detectCtReversal, ctReversalNotice,
 } from '../analysis.js';
 import { buildNarrative, narrativeMarkdown } from '../narrative.js';
+import { ieee519Compliance, sarfiIndices } from '../analysis.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..');
@@ -48,6 +49,10 @@ function buildSession() {
       I_a_avg_A: 100.0 + (i % 11),
       PF_total_avg: 0.90 + (i % 5) * 0.01,
       freq_avg_Hz: 60.0 + ((i % 3) - 1) * 0.01,
+      V_THD_pct_a_avg: 3.0 + (i % 13) * 0.5,
+      V_THD_pct_b_avg: 2.0 + (i % 5) * 0.2,
+      V_THD_pct_c_avg: 4.5 + (i % 3) * 0.1,
+      I_THD_pct_a_avg: 8.0 + (i % 7),
     };
   }
   for (let i = 100; i <= 119; i++) overrides[i].V_LN_a_avg_V = 240.0;
@@ -176,6 +181,32 @@ test('buildNarrative: matches Python golden exactly', () => {
     config: { asset_name: 'MAC03' }, totalRecords: 590000, durationSecs: 604800.0,
   });
   assert.equal(js, golden.narrative);
+});
+
+test('ieee519Compliance: matches Python golden', () => {
+  const res = ieee519Compliance(buildSession(), spec);
+  const g = golden.ieee519;
+  assert.equal(res.all_voltage_compliant, g.all_voltage_compliant);
+  for (const ph of ['a', 'b', 'c']) {
+    approx(res.voltage[ph].p95, g.voltage[ph].p95, PCT_ABS, `V_THD ${ph} p95`);
+    assert.equal(res.voltage[ph].compliant, g.voltage[ph].compliant, `${ph} compliant`);
+    assert.equal(res.voltage[ph].exceeds_planning, g.voltage[ph].exceeds_planning, `${ph} planning`);
+    approx(res.current[ph].p95, g.current[ph].p95, PCT_ABS, `I_THD ${ph} p95`);
+  }
+});
+
+test('sarfiIndices: matches Python golden', () => {
+  // Same sample events the golden uses: dip 72%, outage 0%, swell (ignored).
+  const events = [
+    { kind: 'dip', tStartMs: baseMs, tEndMs: baseMs + 2000, severity: 0.72 },
+    { kind: 'outage', tStartMs: baseMs, tEndMs: baseMs + 120000, severity: 0.0 },
+    { kind: 'swell', tStartMs: baseMs, tEndMs: baseMs + 1000, severity: 1.14 },
+  ];
+  const res = sarfiIndices(events, 277.0);
+  const g = golden.sarfi;
+  for (const k of ['SARFI-90', 'SARFI-80', 'SARFI-70', 'SARFI-50', 'SARFI-10', 'events_considered']) {
+    assert.equal(res[k], g[k], k);
+  }
 });
 
 test('narrativeMarkdown: wraps with a heading', () => {

@@ -326,6 +326,88 @@ def classify_itic(residual_pct: float, duration_secs: float) -> str:
     return "no_interruption"
 
 
+# --- IEEE 519 THD compliance + IEEE 1159 / SARFI indices --------------------
+#
+# IEEE 519-2014 voltage-distortion limits for systems <= 1 kV are 8.0% THD and
+# 5.0% any-single-harmonic; we report against the 5%/8% pair (assessed on the
+# 95th-percentile per-phase V_THD, which is how 519 evaluates compliance).
+# Current TDD limits depend on the short-circuit ratio Isc/IL which the meter
+# does not record, so I_THD is reported as the 95th-percentile per phase
+# (informational) without a hard pass/fail.
+
+# (limit_name, threshold_pct) voltage limits.
+IEEE519_V_THD_LIMIT_PCT = 8.0       # total voltage distortion limit (<=1 kV)
+IEEE519_V_THD_PLANNING_PCT = 5.0    # planning level / single-harmonic guidance
+
+
+def ieee519_compliance(store: ColumnStore) -> dict:
+    """IEEE 519 voltage-THD compliance per phase (assessed at p95).
+
+    Returns {"voltage": {phase: {p95, limit, planning, compliant}}, "current":
+    {phase: {p95}}, "limit_v_thd": 8.0, ...}. A phase is ``compliant`` when its
+    95th-percentile V_THD is at or under the 8% limit.
+    """
+    out: dict = {
+        "limit_v_thd_pct": IEEE519_V_THD_LIMIT_PCT,
+        "planning_v_thd_pct": IEEE519_V_THD_PLANNING_PCT,
+        "voltage": {},
+        "current": {},
+    }
+    all_compliant = True
+    for ph in ("a", "b", "c"):
+        vcol = store.col(f"V_THD_pct_{ph}_avg")
+        sk = _PercentileSketch(0.0, 100.0, nbins=2000)
+        for v in vcol:
+            sk.add(v)
+        p95 = sk.quantile(0.95) if sk.n else 0.0
+        compliant = p95 <= IEEE519_V_THD_LIMIT_PCT
+        all_compliant = all_compliant and compliant
+        out["voltage"][ph] = {
+            "p95": p95,
+            "limit": IEEE519_V_THD_LIMIT_PCT,
+            "planning": IEEE519_V_THD_PLANNING_PCT,
+            "compliant": compliant,
+            "exceeds_planning": p95 > IEEE519_V_THD_PLANNING_PCT,
+        }
+        icol = store.col(f"I_THD_pct_{ph}_avg")
+        ski = _PercentileSketch(0.0, 200.0, nbins=2000)
+        for v in icol:
+            ski.add(v)
+        out["current"][ph] = {"p95": ski.quantile(0.95) if ski.n else 0.0}
+    out["all_voltage_compliant"] = all_compliant
+    return out
+
+
+# SARFI magnitude bins (IEEE 1159 / IEEE 1564): residual-voltage thresholds.
+# SARFI-X counts events whose residual voltage dipped BELOW X% of nominal.
+SARFI_THRESHOLDS = (90, 80, 70, 50, 10)
+
+
+def sarfi_indices(events, nominal_ln_v: float) -> dict:
+    """System Average RMS Frequency Index per threshold (SARFI-X).
+
+    For a single monitoring point SARFI-X is simply the count of voltage events
+    (dips + outages) whose residual voltage fell below X% of nominal. Returns
+    {"SARFI-90": n, ..., "events_considered": m, "nominal_ln_v": v}.
+    """
+    counts = {f"SARFI-{x}": 0 for x in SARFI_THRESHOLDS}
+    considered = 0
+    for ev in events:
+        if ev.kind == "dip":
+            residual_pct = ev.severity * 100.0
+        elif ev.kind == "outage":
+            residual_pct = (ev.severity / nominal_ln_v * 100.0) if nominal_ln_v else 0.0
+        else:
+            continue
+        considered += 1
+        for x in SARFI_THRESHOLDS:
+            if residual_pct < x:
+                counts[f"SARFI-{x}"] += 1
+    counts["events_considered"] = considered
+    counts["nominal_ln_v"] = nominal_ln_v
+    return counts
+
+
 # --- Time-bucket partitioning (--split-by) ----------------------------------
 
 @dataclass(frozen=True)
