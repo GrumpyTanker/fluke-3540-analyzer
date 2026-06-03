@@ -378,3 +378,26 @@ pre.error {
   .range-strip { touch-action: pan-x; user-select: none; }
   .sessions-bar { flex-direction: column; align-items: stretch; }
 }
+
+/* CT-reversal banner (Feature C) */
+.ct-reversal-banner {
+  background: #fff3cd;
+  border: 1px solid #ffec99;
+  color: #663c00;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ct-reversal-banner button { margin-left: auto; }
+[data-theme="dark"] .ct-reversal-banner {
+  background: #3a2f00; border-color: #5c4a00; color: #ffe69c;
+}
+
+/* Statistics table (Feature B) */
+.stats-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.stats-table th, .stats-table td { padding: 0.25rem 0.5rem; text-align: right; border-bottom: 1px solid #ddd; }
+.stats-table th:first-child, .stats-table td:first-child { text-align: left; }

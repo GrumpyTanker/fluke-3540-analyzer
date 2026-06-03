@@ -16,7 +16,8 @@ import json
 from pathlib import Path
 
 from fluke_3540.analysis import (
-    classify_itic, event_itic, time_of_day_profile, whole_session_stats,
+    classify_itic, detect_ct_reversal, event_itic, time_of_day_profile,
+    whole_session_stats,
 )
 from fluke_3540.events import Event
 from fluke_3540.store import ColumnStore
@@ -74,12 +75,20 @@ def test_emit_analysis_golden():
     ]
     event_itic_out = [event_itic(e, 277.0) for e in sample_events]
 
+    # CT-reversal detection on a mixed session: 70% negative-P, 30% positive.
+    ct_overrides: dict = {}
+    plant_window(ct_overrides, 0, 69, {"P_total_avg_W": -30_000.0})
+    plant_window(ct_overrides, 70, 99, {"P_total_avg_W": 30_000.0})
+    ct_store = ColumnStore.from_records(make_records(100, overrides=ct_overrides))
+    ct = detect_ct_reversal(ct_store)
+
     golden = {
         "stats": stats,
         "tod_rows": tod,
         "itic_points": itic_points,
         "itic": itic,
         "event_itic": event_itic_out,
+        "ct_reversal": ct,
     }
     GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     GOLDEN_PATH.write_text(json.dumps(golden, indent=2), encoding="utf-8")
@@ -90,3 +99,5 @@ def test_emit_analysis_golden():
     assert stats["P_total_avg_W"]["count"] == 600
     assert itic[0] == "no_interruption"
     assert len(tod) > 0
+    assert ct["reversed"] is True
+    assert abs(ct["frac_negative"] - 0.70) < 1e-9

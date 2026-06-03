@@ -185,6 +185,83 @@ def whole_session_stats(
     return out
 
 
+# --- CT-reversal auto-detection ---------------------------------------------
+#
+# A correctly-wired load draws real power: P_total > 0 essentially all the time.
+# When an iFlex CT is clipped on backwards, P/Q/PF/energy come out negated, so a
+# load reads as a persistent *generator* (P_total < 0). We flag a session when
+# real power is negative for a high fraction of NON-OUTAGE time — outage samples
+# (all phases collapsed) are excluded because P there is ~0/noise.
+
+def detect_ct_reversal(
+    store: ColumnStore,
+    neg_fraction_threshold: float = 0.50,
+    outage_v_threshold: float = 50.0,
+) -> dict:
+    """Detect a likely reversed-CT install from sustained negative real power.
+
+    Returns a dict:
+        {
+          "reversed": bool,            # True if neg fraction >= threshold
+          "frac_negative": float,      # fraction of non-outage records with P<0
+          "non_outage_records": int,
+          "negative_records": int,
+          "mean_p_w": float,           # mean P over finite non-outage records
+          "threshold": float,
+        }
+
+    A correctly-wired load draws positive real power essentially all the time,
+    so even a modestly-sustained negative-P fraction is a strong reversal signal;
+    the default 0.50 threshold (negative more often than positive) catches it
+    while staying clear of brief regen/export blips. Non-finite P samples are
+    skipped (the real meter occasionally emits NaN). ``reversed`` True means the
+    data looks like a load wired with backwards CTs — re-run with
+    ``--reverse-cts`` (or ``--auto-reverse-cts``) to correct it.
+    """
+    p = store.col("P_total_avg_W")
+    va = store.col("V_LN_a_avg_V")
+    vb = store.col("V_LN_b_avg_V")
+    vc = store.col("V_LN_c_avg_V")
+    n = store.n
+    non_outage = 0
+    negative = 0
+    p_sum = 0.0
+    p_count = 0
+    for i in range(n):
+        if va[i] > outage_v_threshold and vb[i] > outage_v_threshold and vc[i] > outage_v_threshold:
+            non_outage += 1
+            pv = p[i]
+            if pv == pv and pv not in (math.inf, -math.inf):  # finite
+                p_sum += pv
+                p_count += 1
+            if pv < 0:  # NaN < 0 is False, so non-finite never counts as negative
+                negative += 1
+    frac = (negative / non_outage) if non_outage else 0.0
+    mean_p = (p_sum / p_count) if p_count else 0.0
+    return {
+        "reversed": frac >= neg_fraction_threshold,
+        "frac_negative": frac,
+        "non_outage_records": non_outage,
+        "negative_records": negative,
+        "mean_p_w": mean_p,
+        "threshold": neg_fraction_threshold,
+    }
+
+
+def ct_reversal_notice(result: dict) -> str:
+    """A loud, explicit operator-facing notice for a flagged CT reversal."""
+    pct = result["frac_negative"] * 100.0
+    return (
+        "  !!  CT REVERSAL DETECTED  !!\n"
+        f"  Real power (P_total) is NEGATIVE for {pct:.1f}% of non-outage time "
+        f"(mean P = {result['mean_p_w'] / 1000:.1f} kW). A load should draw "
+        "positive real power — this signature means one or more iFlex CT probes "
+        "are clipped on backwards.\n"
+        "  Re-run with --reverse-cts to negate P/Q/PF/energy, or "
+        "--auto-reverse-cts to apply the correction automatically."
+    )
+
+
 # --- ITIC / CBEMA classification --------------------------------------------
 #
 # The ITIC (CBEMA) curve describes the voltage-deviation/duration envelope that

@@ -340,5 +340,13 @@
       "duration_secs": 1.0,
       "itic_class": "no_interruption"
     }
-  ]
+  ],
+  "ct_reversal": {
+    "reversed": true,
+    "frac_negative": 0.7,
+    "non_outage_records": 100,
+    "negative_records": 70,
+    "mean_p_w": -12000.0,
+    "threshold": 0.5
+  }
 }

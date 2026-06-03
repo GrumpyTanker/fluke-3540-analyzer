@@ -155,6 +155,55 @@ export function wholeSessionStats(source, spec, opts = {}) {
   return out;
 }
 
+// --- CT-reversal auto-detection (Feature C) --------------------------------
+//
+// Mirrors python analysis.detect_ct_reversal: a load wired with backwards iFlex
+// CTs reads as a persistent generator (P_total < 0). Flag when real power is
+// negative for a high fraction of NON-OUTAGE time.
+
+export function detectCtReversal(source, spec, opts = {}) {
+  const negFractionThreshold = opts.negFractionThreshold ?? 0.50;
+  const outageVThreshold = opts.outageVThreshold ?? 50.0;
+  const src = asColumnSource(source, spec);
+  const p = src.column('P_total_avg_W');
+  const va = src.column('V_LN_a_avg_V');
+  const vb = src.column('V_LN_b_avg_V');
+  const vc = src.column('V_LN_c_avg_V');
+  let nonOutage = 0;
+  let negative = 0;
+  let pSum = 0.0;
+  let pCount = 0;
+  for (let i = 0; i < src.length; i++) {
+    if (va[i] > outageVThreshold && vb[i] > outageVThreshold && vc[i] > outageVThreshold) {
+      nonOutage += 1;
+      const pv = p[i];
+      if (Number.isFinite(pv)) { pSum += pv; pCount += 1; }
+      if (pv < 0) negative += 1;  // NaN < 0 is false, so non-finite never counts
+    }
+  }
+  const frac = nonOutage ? negative / nonOutage : 0.0;
+  const meanP = pCount ? pSum / pCount : 0.0;
+  return {
+    reversed: frac >= negFractionThreshold,
+    frac_negative: frac,
+    non_outage_records: nonOutage,
+    negative_records: negative,
+    mean_p_w: meanP,
+    threshold: negFractionThreshold,
+  };
+}
+
+export function ctReversalNotice(result) {
+  const pct = result.frac_negative * 100.0;
+  return (
+    'CT REVERSAL DETECTED — ' +
+    `real power (P_total) is negative for ${pct.toFixed(1)}% of non-outage time ` +
+    `(mean P = ${(result.mean_p_w / 1000).toFixed(1)} kW). A load should draw ` +
+    'positive real power: one or more iFlex CT probes are likely clipped on ' +
+    'backwards. Toggle "Reverse CTs" (all phases) to correct P/Q/PF/energy.'
+  );
+}
+
 // --- ITIC / CBEMA classification -------------------------------------------
 
 const ITIC_LOWER = [

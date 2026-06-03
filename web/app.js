@@ -13,7 +13,7 @@ import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
 import { ColumnStore } from './column_store.js';
-import { wholeSessionStats, timeOfDayProfile } from './analysis.js';
+import { wholeSessionStats, timeOfDayProfile, detectCtReversal, ctReversalNotice } from './analysis.js';
 import {
   computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
   peakHoursToString, saveTariff,
@@ -374,6 +374,7 @@ async function onParseDone(msg) {
     renderSnapshotsList();
     renderQuantityGrid();
     renderStatsPanel(spec);
+    checkCtReversal(spec);
     renderSessionsBar();
     els.insightsSec.hidden = currentFindings.length === 0;
     els.sessionsSec.hidden = false;
@@ -434,6 +435,7 @@ async function onParseDoneColumnar(store) {
     renderSnapshotsList();
     renderQuantityGrid();
     renderStatsPanel(spec);
+    checkCtReversal(spec);
     renderSessionsBar();
     els.insightsSec.hidden = currentFindings.length === 0;
     els.sessionsSec.hidden = false;
@@ -502,6 +504,23 @@ function recordsForExport(spec) {
 let currentStats = null;       // last computed whole_session_stats (for exports)
 let currentTodRows = null;     // last computed time-of-day profile (for exports)
 let currentNarrative = null;   // executive-summary narrative (Feature E)
+
+// CT-reversal banner (Feature C): warn when real power is sustained-negative on
+// a load and reverse-CTs isn't already applied. The Apply button ticks all
+// phase boxes and re-parses (which negates P/Q/PF/energy).
+function checkCtReversal(spec) {
+  const banner = document.getElementById('ct-reversal-banner');
+  const msg = document.getElementById('ct-reversal-msg');
+  if (!banner) return;
+  const src = dataSource();
+  const reverseOn = selectedReversePhases() !== false;
+  if (!src || reverseOn) { banner.hidden = true; return; }
+  let res;
+  try { res = detectCtReversal(src, spec); } catch (_) { banner.hidden = true; return; }
+  if (!res.reversed) { banner.hidden = true; return; }
+  if (msg) msg.textContent = ' ' + ctReversalNotice(res);
+  banner.hidden = false;
+}
 
 function renderStatsPanel(spec) {
   const sec = document.getElementById('stats-section');
@@ -1473,6 +1492,14 @@ for (const cb of [els.reverseA, els.reverseB, els.reverseC]) {
     else renderSummary();
   });
 }
+document.getElementById('ct-reversal-apply')?.addEventListener('click', () => {
+  if (els.reverseA) els.reverseA.checked = true;
+  if (els.reverseB) els.reverseB.checked = true;
+  if (els.reverseC) els.reverseC.checked = true;
+  document.getElementById('ct-reversal-banner').hidden = true;
+  if (currentFile) parseStreaming(currentFile).catch(showError);
+  else if (currentArrayBuffer) parseBuffer();
+});
 els.resetBtn.addEventListener('click', resetUi);
 els.eventsExportNotes?.addEventListener('click', () => {
   const json = exportNotesJson(currentFileHash, currentEvents);

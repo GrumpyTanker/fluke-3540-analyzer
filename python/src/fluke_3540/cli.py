@@ -130,6 +130,11 @@ def build_argparser() -> argparse.ArgumentParser:
                     help="Negate P/Q/PF/DPF/Wh/VARh for backwards iFlex CTs. "
                          "Bare flag = all phases; pass a comma list like 'a,c' to "
                          "only flip those phases (plus totals).")
+    ap.add_argument("--auto-reverse-cts", action="store_true",
+                    help="Auto-detect a reversed-CT install (sustained negative "
+                         "real power on a load) and apply --reverse-cts "
+                         "automatically, with a loud notice. No-op if the data "
+                         "already reads as a normal load.")
     ap.add_argument("--every", type=int, default=1, metavar="K",
                     help="Emit every K-th record into the CSV (default 1, all)")
     ap.add_argument("--max-csv-rows", type=int, default=None, metavar="N",
@@ -272,7 +277,31 @@ def _parse_session(args: argparse.Namespace, outdir: Path,
     if st.bad_magic or st.truncated or st.nonfinite:
         print(f"        robustness: {st.bad_magic} bad-magic, "
               f"{st.truncated} truncated, {st.nonfinite} non-finite (skipped/flagged)")
-    return full_csv, min_csv, res["config"], res["store"]
+
+    # CT-reversal auto-detection (Feature C). Always check + notify; with
+    # --auto-reverse-cts (and no explicit --reverse-cts already applied) re-run
+    # the single-pass parse with the correction applied.
+    store = res["store"]
+    from .analysis import ct_reversal_notice, detect_ct_reversal
+    ct = detect_ct_reversal(store)
+    if ct["reversed"]:
+        print(ct_reversal_notice(ct))
+        already_reversed = bool(reverse_cts)
+        if getattr(args, "auto_reverse_cts", False) and not already_reversed:
+            print("[parse] --auto-reverse-cts: re-parsing with reverse-CTs applied…")
+            res = export_csv_multi(
+                session_dir, full_csv, min_csv,
+                every=args.every, reverse_cts=True,
+                max_full_rows=getattr(args, "max_csv_rows", None),
+                time_shift=time_shift, build_store=True,
+                log=print, progress_every=100_000,
+            )
+            store = res["store"]
+            ct_after = detect_ct_reversal(store)
+            print(f"        after auto-reverse: P now negative for "
+                  f"{ct_after['frac_negative'] * 100:.1f}% of non-outage time "
+                  f"(mean P = {ct_after['mean_p_w'] / 1000:.1f} kW)")
+    return full_csv, min_csv, res["config"], store
 
 
 def _store_from_csv(csv_path: Path) -> ColumnStore:
@@ -549,6 +578,11 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     nominal_ln_v = _infer_nominal_ln_v(store, args.nominal_ln_v)
     # ITIC always augments events.json (cheap, high-value for the deliverable).
     _augment_events_itic(outdir, events, nominal_ln_v)
+
+    # CT-reversal status snapshot for reports/web (cheap; one pass).
+    from .analysis import detect_ct_reversal
+    ct = detect_ct_reversal(store)
+    (outdir / "ct_reversal.json").write_text(json.dumps(ct, indent=2), encoding="utf-8")
 
     stats: dict = {}
     if not getattr(args, "no_stats", False):

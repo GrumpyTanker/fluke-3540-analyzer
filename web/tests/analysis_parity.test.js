@@ -10,6 +10,7 @@ import { test } from 'node:test';
 
 import {
   wholeSessionStats, classifyItic, eventItic, timeOfDayProfile,
+  detectCtReversal, ctReversalNotice,
 } from '../analysis.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -121,6 +122,39 @@ test('eventItic: matches Python golden', () => {
     approx(js.duration_secs, g.duration_secs, 1e-9, `event_itic[${i}].duration_secs`);
     assert.equal(js.itic_class, g.itic_class, `event_itic[${i}].itic_class`);
   }
+});
+
+test('detectCtReversal: matches Python golden (mixed 70% negative session)', () => {
+  // Recreate the golden CT session: 70 records P=-30kW, 30 records P=+30kW.
+  const base = {};
+  for (const f of spec.fields) base[f.name] = 0.0;
+  for (const ph of ['a', 'b', 'c']) {
+    for (const st of ['min', 'max', 'avg']) {
+      base[`V_LN_${ph}_${st}_V`] = 277.0;
+      base[`I_${ph}_${st}_A`] = 100.0;
+    }
+  }
+  base['freq_avg_Hz'] = 60.0;
+  const records = [];
+  for (let n = 0; n < 100; n++) {
+    const merged = { ...base, P_total_avg_W: n < 70 ? -30000.0 : 30000.0 };
+    const floats = new Float32Array(spec.data_floats);
+    for (const [name, val] of Object.entries(merged)) {
+      if (FI.has(name)) floats[FI.get(name)] = val;
+    }
+    records.push({ index: n, startMs: baseMs + n * 1000, endMs: baseMs + (n + 1) * 1000, floats });
+  }
+  const js = detectCtReversal(records, spec);
+  const g = golden.ct_reversal;
+  assert.equal(js.reversed, g.reversed);
+  assert.equal(js.non_outage_records, g.non_outage_records);
+  assert.equal(js.negative_records, g.negative_records);
+  approx(js.frac_negative, g.frac_negative, 1e-9, 'frac_negative');
+  approx(js.mean_p_w, g.mean_p_w, 1e-3, 'mean_p_w');
+  // Notice is loud + actionable.
+  const notice = ctReversalNotice(js);
+  assert.match(notice, /CT REVERSAL DETECTED/);
+  assert.match(notice, /Reverse CTs/);
 });
 
 test('timeOfDayProfile: matches Python golden row-for-row', () => {
