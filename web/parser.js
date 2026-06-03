@@ -179,6 +179,135 @@ export function parseTrendBin(arrayBuffer, spec, opts = {}) {
   return { records };
 }
 
+// --- Streaming columnar parse (Feature A: ~1.6 GB → ~55 MB) ----------------
+//
+// Instead of holding one 180-float record object per second, decode straight
+// into packed Float32Array columns (only the analysis channels) + Float64Array
+// timestamp arrays. The full ArrayBuffer is processed record-aligned; callers
+// that stream a Blob (parser_worker.js) feed chunks here so the whole 438 MB
+// is never resident at once.
+
+import { STORE_COLUMNS, resolveStoreIndices } from './column_store.js';
+
+/**
+ * Allocate the column arrays for a columnar parse of `recordCount` records.
+ * @param {number} recordCount
+ * @returns {{columns: Object<string,Float32Array>, startMs: Float64Array, endMs: Float64Array}}
+ */
+export function allocColumns(recordCount) {
+  const columns = {};
+  for (const name of STORE_COLUMNS) columns[name] = new Float32Array(recordCount);
+  return {
+    columns,
+    startMs: new Float64Array(recordCount),
+    endMs: new Float64Array(recordCount),
+  };
+}
+
+/**
+ * Decode a record-aligned slice of `arrayBuffer` into pre-allocated column
+ * arrays, starting at output record index `outBase`. Used by both the one-shot
+ * and the chunked-streaming columnar parsers.
+ *
+ * @param {ArrayBuffer} arrayBuffer a buffer whose length is a multiple of recordSize
+ * @param {object} idx buildIndex() result
+ * @param {{columns, startMs, endMs}} sink pre-allocated output
+ * @param {Map<string,number>} storeIdx STORE_COLUMNS name -> float index
+ * @param {Set<number>|null} flip reverse-CT indices to negate, or null
+ * @param {number} outBase output record offset
+ * @returns {number} number of records decoded from this slice
+ */
+function decodeColumnarSlice(arrayBuffer, idx, sink, storeIdx, flip, outBase) {
+  const view = new DataView(arrayBuffer);
+  const recs = Math.floor(view.byteLength / idx.recordSize);
+  const magic = idx.recordMagic;
+  // Pre-resolve the (column-array, floatIndex, flipFlag) tuples once.
+  const plan = STORE_COLUMNS.map((name) => {
+    const fi = storeIdx.get(name);
+    return [sink.columns[name], fi, flip ? flip.has(fi) : false];
+  });
+  for (let r = 0; r < recs; r++) {
+    const offset = r * idx.recordSize;
+    for (let m = 0; m < magic.length; m++) {
+      if (view.getUint8(offset + m) !== magic[m]) {
+        throw new FlukeBinaryError(
+          `Bad magic at record ${outBase + r} (offset 0x${offset.toString(16)})`
+        );
+      }
+    }
+    const startHi = BigInt(view.getUint32(offset + 4, true));
+    const startLo = BigInt(view.getUint32(offset + 8, true));
+    const endHi = BigInt(view.getUint32(offset + 12, true));
+    const endLo = BigInt(view.getUint32(offset + 16, true));
+    const out = outBase + r;
+    sink.startMs[out] = filetimeToUnixMs((startHi << 32n) | startLo);
+    sink.endMs[out] = filetimeToUnixMs((endHi << 32n) | endLo);
+    const floatsBase = offset + idx.headerBytes;
+    for (const [arr, fi, doFlip] of plan) {
+      let v = view.getFloat32(floatsBase + fi * 4, true);
+      if (doFlip) v = -v;
+      arr[out] = v;
+    }
+  }
+  return recs;
+}
+
+/**
+ * One-shot columnar parse of a full trend.bin ArrayBuffer. Returns Transferable
+ * typed-array columns instead of 590 K record objects.
+ *
+ * @param {ArrayBuffer} arrayBuffer
+ * @param {object} spec
+ * @param {{reverseCts?: boolean|string[], onProgress?: (done:number,total:number)=>void}} [opts]
+ * @returns {{recordCount:number, columns:Object<string,Float32Array>, startMs:Float64Array, endMs:Float64Array}}
+ */
+export function parseTrendColumnar(arrayBuffer, spec, opts = {}) {
+  const { reverseCts = false, onProgress = null } = opts;
+  const idx = buildIndex(spec, { reverseCts });
+  const flip = reverseCts ? idx.reverseCtsIndices : null;
+  const storeIdx = resolveStoreIndices(spec);
+  const total = Math.floor(arrayBuffer.byteLength / idx.recordSize);
+  const sink = allocColumns(total);
+  decodeColumnarSlice(arrayBuffer, idx, sink, storeIdx, flip, 0);
+  if (onProgress) onProgress(total, total);
+  return { recordCount: total, ...sink };
+}
+
+/**
+ * Streaming columnar parse: read a Blob/File in record-aligned chunks so the
+ * full ArrayBuffer is never resident. `readSlice(start, end)` must return a
+ * Promise<ArrayBuffer> for the byte range [start, end) — in the browser that's
+ * `blob.slice(start, end).arrayBuffer()`.
+ *
+ * @param {{size:number, readSlice:(start:number,end:number)=>Promise<ArrayBuffer>}} source
+ * @param {object} spec
+ * @param {{reverseCts?: boolean|string[], chunkBytes?: number, onProgress?: (done:number,total:number)=>void}} [opts]
+ * @returns {Promise<{recordCount:number, columns, startMs, endMs}>}
+ */
+export async function parseTrendColumnarStream(source, spec, opts = {}) {
+  const { reverseCts = false, chunkBytes = 8 * 1024 * 1024, onProgress = null } = opts;
+  const idx = buildIndex(spec, { reverseCts });
+  const flip = reverseCts ? idx.reverseCtsIndices : null;
+  const storeIdx = resolveStoreIndices(spec);
+  const recordSize = idx.recordSize;
+  const total = Math.floor(source.size / recordSize);
+  const sink = allocColumns(total);
+  // Round the chunk down to a whole number of records so slices stay aligned.
+  const recsPerChunk = Math.max(1, Math.floor(chunkBytes / recordSize));
+  const bytesPerChunk = recsPerChunk * recordSize;
+  let done = 0;
+  for (let start = 0; done < total; start += bytesPerChunk) {
+    const remaining = total - done;
+    const recsThisChunk = Math.min(recsPerChunk, remaining);
+    const end = start + recsThisChunk * recordSize;
+    const buf = await source.readSlice(start, end);
+    decodeColumnarSlice(buf, idx, sink, storeIdx, flip, done);
+    done += recsThisChunk;
+    if (onProgress) onProgress(done, total);
+  }
+  return { recordCount: total, ...sink };
+}
+
 /**
  * Convert a {records} parse result to a labelled-row generator (one object per
  * record, keyed by field name). Convenience for downstream code; the raw
