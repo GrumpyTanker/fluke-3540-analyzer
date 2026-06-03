@@ -808,6 +808,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if raw_argv and raw_argv[0] == "compare":
         from .cli_compare import compare_main
         return compare_main(raw_argv[1:])
+    if raw_argv and raw_argv[0] == "stitch":
+        from .cli_stitch import stitch_main
+        return stitch_main(raw_argv[1:])
 
     # Make console output UTF-8 safe on Windows (default cp1252 chokes on →, σ, etc.)
     for stream in (sys.stdout, sys.stderr):
