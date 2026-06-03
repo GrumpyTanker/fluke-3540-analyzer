@@ -14,37 +14,14 @@ from dataclasses import dataclass
 from statistics import median, mean, pstdev
 from typing import Iterable, Sequence
 
-from .parser import FIELDS, Record
+from .store import ColumnStore
 
 
-# --- Field index lookup -------------------------------------------------------
-
-_FIELD_INDEX = {f.name: f.index for f in FIELDS}
-
-
-def _idx(name: str) -> int:
-    try:
-        return _FIELD_INDEX[name]
-    except KeyError as e:
-        raise KeyError(
-            f"Field {name!r} missing from spec/field_map.json — events module "
-            "depends on it"
-        ) from e
-
-
-# Voltage channels (per-phase L-N min/max/avg)
-_V_LN_MIN = (_idx("V_LN_a_min_V"), _idx("V_LN_b_min_V"), _idx("V_LN_c_min_V"))
-_V_LN_MAX = (_idx("V_LN_a_max_V"), _idx("V_LN_b_max_V"), _idx("V_LN_c_max_V"))
-_V_LN_AVG = (_idx("V_LN_a_avg_V"), _idx("V_LN_b_avg_V"), _idx("V_LN_c_avg_V"))
-
-# Current channels
-_I_MAX = (_idx("I_a_max_A"), _idx("I_b_max_A"), _idx("I_c_max_A"))
-
-# Frequency (use avg)
-_FREQ_AVG = _idx("freq_avg_Hz")
-
-# Total active power (avg over 1-sec window)
-_P_TOTAL_AVG = _idx("P_total_avg_W")
+# Per-phase channel names (resolved from the ColumnStore, not the raw spec).
+_V_LN_MIN = ("V_LN_a_min_V", "V_LN_b_min_V", "V_LN_c_min_V")
+_V_LN_MAX = ("V_LN_a_max_V", "V_LN_b_max_V", "V_LN_c_max_V")
+_V_LN_AVG = ("V_LN_a_avg_V", "V_LN_b_avg_V", "V_LN_c_avg_V")
+_I_MAX = ("I_a_max_A", "I_b_max_A", "I_c_max_A")
 
 _PHASES = ("a", "b", "c")
 
@@ -125,28 +102,34 @@ def _infer_nominal_ln_v(v_avg_by_phase: list[list[float]],
 # --- Main entry point ---------------------------------------------------------
 
 def detect_events(
-    records: Iterable[Record],
+    records_or_store: Iterable | ColumnStore,
     nominal_ln_v: float | None = None,
     rules: EventRules = DEFAULT_RULES,
 ) -> list[Event]:
-    """Scan a sequence of Records and return detected events in time order.
+    """Scan a session and return detected events in time order.
+
+    Accepts a :class:`~fluke_3540.store.ColumnStore` (production path) or any
+    iterable of Records (small fixtures / legacy callers — a store is built
+    from them cheaply).
 
     If nominal_ln_v is None, it is auto-inferred as the median of per-phase L-N
     avg voltages with outage samples (<= outage_v_threshold) excluded.
     """
-    recs = list(records)
-    if not recs:
+    store = (records_or_store if isinstance(records_or_store, ColumnStore)
+             else ColumnStore.from_records(records_or_store))
+    nrec = store.n
+    if nrec == 0:
         return []
 
-    # Column extraction
-    times = [r.start for r in recs]
-    end_times = [r.end for r in recs]
-    v_min = [[r.floats[idx] for r in recs] for idx in _V_LN_MIN]
-    v_max = [[r.floats[idx] for r in recs] for idx in _V_LN_MAX]
-    v_avg = [[r.floats[idx] for r in recs] for idx in _V_LN_AVG]
-    i_max = [[r.floats[idx] for r in recs] for idx in _I_MAX]
-    freq = [r.floats[_FREQ_AVG] for r in recs]
-    p_total = [r.floats[_P_TOTAL_AVG] for r in recs]
+    # Column extraction — these are array.array('f') views (no per-Record copy).
+    times = list(store.iter_times())
+    end_times = list(store.iter_end_times())
+    v_min = [store.col(name) for name in _V_LN_MIN]
+    v_max = [store.col(name) for name in _V_LN_MAX]
+    v_avg = [store.col(name) for name in _V_LN_AVG]
+    i_max = [store.col(name) for name in _I_MAX]
+    freq = store.col("freq_avg_Hz")
+    p_total = store.col("P_total_avg_W")
 
     if nominal_ln_v is None:
         nominal_ln_v = _infer_nominal_ln_v(v_avg, rules.outage_v_threshold)
@@ -156,7 +139,7 @@ def detect_events(
     # not_outage[i] is True when ALL phases > outage_v_threshold (avg voltage)
     not_outage = [
         all(v_avg[p][i] > rules.outage_v_threshold for p in range(3))
-        for i in range(len(recs))
+        for i in range(nrec)
     ]
     outage_mask = [not n for n in not_outage]
 
@@ -186,7 +169,7 @@ def detect_events(
     dip_mask = [
         not_outage[i]
         and any(v_min[p][i] < dip_threshold for p in range(3))
-        for i in range(len(recs))
+        for i in range(nrec)
     ]
     for s, e in _group_runs(dip_mask, rules.gap_tolerance_secs):
         dipped = []
@@ -204,7 +187,7 @@ def detect_events(
     swell_mask = [
         not_outage[i]
         and any(v_max[p][i] > swell_threshold for p in range(3))
-        for i in range(len(recs))
+        for i in range(nrec)
     ]
     for s, e in _group_runs(swell_mask, rules.gap_tolerance_secs):
         swelled = []
@@ -232,7 +215,7 @@ def detect_events(
         threshold = mu + rules.high_current_sigma * sigma
         mask = [
             not_outage[i] and i_max[p][i] > threshold
-            for i in range(len(recs))
+            for i in range(nrec)
         ]
         for s, e in _group_runs(mask, rules.gap_tolerance_secs):
             peak = max(i_max[p][s:e + 1])
@@ -242,7 +225,7 @@ def detect_events(
     # Severity: signed deviation in Hz (negative = under-frequency).
     freq_mask = [
         not_outage[i] and abs(freq[i] - rules.nominal_freq_hz) > rules.freq_excursion_hz
-        for i in range(len(recs))
+        for i in range(nrec)
     ]
     for s, e in _group_runs(freq_mask, rules.gap_tolerance_secs):
         window = freq[s:e + 1]
@@ -255,7 +238,7 @@ def detect_events(
     # NEMA: max-min across phase avg L-N voltages > N% of mean.
     imbal_mask = []
     imbal_pct = []
-    for i in range(len(recs)):
+    for i in range(nrec):
         if not not_outage[i]:
             imbal_mask.append(False)
             imbal_pct.append(0.0)
@@ -281,7 +264,7 @@ def detect_events(
         baseline = mean(abs(p) for p in p_valid)
         step_threshold = baseline * rules.power_step_pct_of_mean
         if step_threshold > 0:
-            for i in range(1, len(recs)):
+            for i in range(1, nrec):
                 if not (not_outage[i] and not_outage[i - 1]):
                     continue
                 delta = p_total[i] - p_total[i - 1]
