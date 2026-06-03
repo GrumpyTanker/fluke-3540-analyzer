@@ -96,6 +96,10 @@ fluke-analyze path/to/ES.NNN -o output/ \
 | `--marks FILE.csv` | | Load markers from a CSV (`time,label`). |
 | `--tod-profile [HH:MM-HH:MM]` | off | Time-of-day (diurnal) profile — avg/min/max envelope per bin across all days. Bare flag = 24 h. Writes `time_of_day_profile.csv` + an XLSX sheet. |
 | `--tod-bin MINS` | `1` | Time-of-day bin width in minutes. |
+| `--demand-window SECS` | `900` | Rolling peak-demand window. Reports peak demand + the window it occurred in (`demand.json` + XLSX). See [`docs/DEMAND.md`](docs/DEMAND.md). |
+| `--tz ZONE` | UTC | Render report timestamps in local + UTC for an IANA zone (e.g. `America/Chicago`). Default UTC only. |
+| `--auto-reverse-cts` | off | Auto-detect a reversed-CT install (sustained negative real power) and apply `--reverse-cts` automatically, with a loud notice. See `docs/CT_REVERSAL.md`. |
+| `--rules-file FILE` | off | JSON/TOML EventRules overrides keyed by asset name. See [`docs/RULES_FILE.md`](docs/RULES_FILE.md). |
 | `--no-stats` | | Skip whole-session statistics (`stats.json`/`stats.csv` + XLSX sheet). |
 | `--format` | `png` | `png` or `svg` |
 | `--no-xlsx` | | Skip the XLSX workbook |
@@ -133,6 +137,25 @@ fluke-analyze compare SESSION1 SESSION2 [...] -o OUT --labels "before,after"
 Overlays selected quantities across sessions on the same axes (aligned by
 relative-time-from-session-start) and writes a side-by-side
 `compare_summary.csv`. See [`docs/COMPARE.md`](docs/COMPARE.md).
+
+### Multi-session stitching
+
+```bash
+fluke-analyze stitch ES.001 ES.002 [...] -o OUT
+```
+
+Concatenates consecutive captures of the same asset into one continuous,
+gap-aware timeline (beating the meter's 7-day cap), with per-source provenance
+in `stitch.json`, then runs the normal analysis over the stitched series. See
+[`docs/STITCHING.md`](docs/STITCHING.md).
+
+## Power-quality standards & per-asset rules
+
+- **IEEE 519 / IEEE 1159 / SARFI** — voltage-THD compliance and SARFI dip
+  indices in every run (`pq_standards.json`). See
+  [`docs/PQ_STANDARDS.md`](docs/PQ_STANDARDS.md).
+- **Per-asset thresholds** — override `EventRules` from JSON/TOML keyed by asset
+  with `--rules-file`. See [`docs/RULES_FILE.md`](docs/RULES_FILE.md).
 
 ## Event detection
 

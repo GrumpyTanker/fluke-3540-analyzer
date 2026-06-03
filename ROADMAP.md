@@ -4,6 +4,34 @@ Shipped releases live in [CHANGELOG.md](CHANGELOG.md). This file is the
 backlog of ideas we've discussed but not yet committed to a specific
 release.
 
+## Shipped in v0.6 — web parity + analysis depth
+
+Closed the v0.5 web memory/parity gap and added standards-grade analysis, all
+parity-tested Python↔JS:
+
+- **Web streaming columnar parse** — the two deferred v0.5 web items below
+  ("typed-array record storage" + "chunked/streaming parse with progress") are
+  now shipped together: `web/column_store.js` + a chunked `Blob.slice` parser in
+  the worker that Transfers packed `Float32Array` columns back. ES.004 (438 MB,
+  589,877 recs) now parses + fully analyses at ~278 MB peak RSS vs ~1.6 GB.
+- **`web/analysis.js`** — full JS stats port (Welford, percentile sketch,
+  whole-session stats, ITIC, time-of-day, marker correlation) with a Statistics
+  panel + ToD chart; closes the "web has no stats" gap.
+- **CT-reversal auto-detection** (`--auto-reverse-cts` + web banner).
+- **Multi-session stitching** (`fluke-analyze stitch`).
+- **Auto-narrative / executive summary** — the rule-based, no-LLM version of
+  Theme D below (an LLM mostly restates the structured findings, as predicted).
+- **IEEE 519 + IEEE 1159 / SARFI** power-quality indices.
+- **Rolling peak demand** (`--demand-window`) — the kWh-side of Theme B's
+  "demand charges".
+- **Per-asset threshold config** (`--rules-file`) — the file-driven form of
+  Theme E's "custom event-rule editor" (a web slider editor is still open).
+- **Timezone-aware reports** (`--tz`).
+
+Still open from the backlog: fleet/monitoring (Theme A), full TOU/financial
+rigor (Theme B), comparison polish (Theme C), the rest of power-user/ecosystem
+(Theme E), and polish (Theme F).
+
 ## Shipped in v0.5 — large-session hardening
 
 The v0.5 release was driven by a real ~6.8-day P115RE-MAC03 capture
@@ -18,19 +46,17 @@ remain the forward backlog.
 ### Deferred from the v0.5 web pass
 
 The Python core is fully week-hardened. The browser app got chart
-decimation (the biggest uPlot win) this pass; the remaining 7-day
-robustness work is parked here:
+decimation in v0.5; the streaming/typed-array work below **shipped in v0.6**:
 
-- **Typed-array record storage** — `parser.js` currently allocates one
-  object + one `Float32Array(180)` per record (~425 MB+ for a week).
-  Replace with a single flat `Float32Array` (or per-column arrays mirroring
-  the Python `ColumnStore`) indexed by record, eliminating per-record
-  object overhead.
-- **Chunked / streaming parse with progress** — parse in slices off a
-  `File`/`Blob` stream so a 438 MB session never has to be held as one
-  `ArrayBuffer` plus a parallel object array.
-- **IndexedDB large-session verification** — confirm the cache layer
-  holds a 438 MB session and evicts sanely under quota pressure.
+- ~~**Typed-array record storage**~~ — **DONE (v0.6)**: `web/column_store.js`
+  keeps the analysis channels as packed `Float32Array` columns instead of
+  per-record objects.
+- ~~**Chunked / streaming parse with progress**~~ — **DONE (v0.6)**:
+  `parseTrendColumnarStream` reads the `File` in 8 MB record-aligned
+  `Blob.slice` chunks; the full `ArrayBuffer` is never resident.
+- **IndexedDB large-session verification** — still open: confirm the cache
+  layer holds a 438 MB session and evicts sanely under quota pressure. (The
+  streaming path no longer caches the raw buffer, reducing pressure.)
 
 ## v0.5 candidates
 
