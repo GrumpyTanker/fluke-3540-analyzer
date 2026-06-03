@@ -195,7 +195,30 @@ function insightsHtml(findings) {
   return out.join('\n');
 }
 
-export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [] }) {
+// Whole-session statistics table (Feature B) from a wholeSessionStats() dict.
+function wholeStatsTableHtml(wholeStats) {
+  if (!wholeStats) return '';
+  const cols = ['min', 'p1', 'p5', 'median', 'mean', 'p95', 'p99', 'max', 'stdev'];
+  const head = ['Channel', 'Unit', ...cols].map((h) => `<th>${esc(h)}</th>`).join('');
+  const fmt = (v) => (Number.isFinite(v)
+    ? (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(2)) : '—');
+  const rows = [];
+  for (const [name, d] of Object.entries(wholeStats)) {
+    if (name.startsWith('_')) continue;
+    const cells = [esc(name), esc(d.unit), ...cols.map((c) => fmt(d[c]))]
+      .map((c) => `<td>${c}</td>`).join('');
+    rows.push(`<tr>${cells}</tr>`);
+  }
+  const th = wholeStats._thresholds || {};
+  const note =
+    `<p><small>Under-voltage (&lt;${th.undervoltage_v} V): ${th.sec_undervoltage} s ` +
+    `(${(th.pct_undervoltage ?? 0).toFixed(2)}%). Over-current (&gt;${th.overcurrent_a} A): ` +
+    `${th.sec_overcurrent} s (${(th.pct_overcurrent ?? 0).toFixed(2)}%).</small></p>`;
+  return `<h2>Statistics</h2><table><thead><tr>${head}</tr></thead>` +
+    `<tbody>${rows.join('')}</tbody></table>${note}`;
+}
+
+export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [], wholeStats = null, narrative = null }) {
   const energy = summarizeRecords(records, spec);
   const stats = {
     'Records (per-second)': records.length.toLocaleString(),
@@ -207,10 +230,15 @@ export function buildReportHtml({ title, config, records, spec, events, snapshot
     'Peak export (kW)': (energy.pNeg / 1000).toFixed(2),
   };
   const charts = collectChartArtifacts();
+  const narrativeHtml = narrative
+    ? `<section class="narrative"><h2>Executive summary</h2><p>${esc(narrative).replace(/\n/g, '<br>')}</p></section>`
+    : '';
   const body = [
     `<h1>${esc(title)}</h1>`,
+    narrativeHtml,
     '<h2>Summary</h2>',
     summaryDlHtml(stats, config),
+    wholeStatsTableHtml(wholeStats),
     insightsHtml(findings),
     '<h2>Events</h2>',
     eventsTableHtml(events),

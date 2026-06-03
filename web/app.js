@@ -13,6 +13,7 @@ import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
 import { ColumnStore } from './column_store.js';
+import { wholeSessionStats, timeOfDayProfile } from './analysis.js';
 import {
   computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
   peakHoursToString, saveTariff,
@@ -372,6 +373,7 @@ async function onParseDone(msg) {
     renderEventsTable();
     renderSnapshotsList();
     renderQuantityGrid();
+    renderStatsPanel(spec);
     renderSessionsBar();
     els.insightsSec.hidden = currentFindings.length === 0;
     els.sessionsSec.hidden = false;
@@ -495,9 +497,114 @@ function recordsForExport(spec) {
   return [];
 }
 
-// Statistics panel (Feature B) — populated from whole_session_stats; safe no-op
-// until the stats UI is wired so the parse flow never throws on older markup.
-function renderStatsPanel(_spec) { /* Feature B fills this in */ }
+// Statistics panel (Feature B) — whole-session stats table + time-of-day chart,
+// computed straight off the resident ColumnStore so the CLI and web agree.
+let currentStats = null;       // last computed whole_session_stats (for exports)
+let currentTodRows = null;     // last computed time-of-day profile (for exports)
+let currentNarrative = null;   // executive-summary narrative (Feature E)
+
+function renderStatsPanel(spec) {
+  const sec = document.getElementById('stats-section');
+  const wrap = document.getElementById('stats-table-wrap');
+  const status = document.getElementById('stats-status');
+  if (!sec || !wrap) return;
+  const src = dataSource();
+  if (!src) { sec.hidden = true; return; }
+  try {
+    currentStats = wholeSessionStats(src, spec);
+    currentTodRows = timeOfDayProfile(src, spec, { window: [0, 1440], binMinutes: 1 });
+  } catch (e) {
+    console.warn('stats failed:', e);
+    sec.hidden = true;
+    return;
+  }
+  sec.hidden = false;
+
+  // Stats table.
+  const table = document.createElement('table');
+  table.className = 'stats-table';
+  const thead = document.createElement('thead');
+  const hr = document.createElement('tr');
+  for (const h of ['Channel', 'Unit', 'Min', 'p1', 'p5', 'Median', 'Mean', 'p95', 'p99', 'Max', 'Stdev']) {
+    const th = document.createElement('th');
+    th.textContent = h;
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  const fmt = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(2)) : '—');
+  for (const [name, d] of Object.entries(currentStats)) {
+    if (name.startsWith('_')) continue;
+    const tr = document.createElement('tr');
+    const cells = [name, d.unit, fmt(d.min), fmt(d.p1), fmt(d.p5), fmt(d.median),
+                   fmt(d.mean), fmt(d.p95), fmt(d.p99), fmt(d.max), fmt(d.stdev)];
+    for (const c of cells) {
+      const td = document.createElement('td');
+      td.textContent = c;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+
+  const th = currentStats._thresholds || {};
+  const note = document.createElement('p');
+  note.className = 'stats-thresholds';
+  const us = document.createElement('small');
+  us.textContent =
+    `Under-voltage (<${th.undervoltage_v} V, any phase, non-outage): ` +
+    `${th.sec_undervoltage} s (${(th.pct_undervoltage ?? 0).toFixed(2)}%). ` +
+    `Over-current (>${th.overcurrent_a} A, any phase): ` +
+    `${th.sec_overcurrent} s (${(th.pct_overcurrent ?? 0).toFixed(2)}%).`;
+  note.appendChild(us);
+
+  wrap.replaceChildren(table, note);
+  if (status) status.firstChild
+    ? (status.firstChild.textContent = `${Object.keys(currentStats).length - 1} channels over ${(th.total_records || 0).toLocaleString()} records.`)
+    : (status.textContent = '');
+
+  renderTodChart();
+}
+
+function renderTodChart() {
+  const head = document.getElementById('tod-heading');
+  const div = document.getElementById('tod-chart');
+  const uPlot = window.uPlot;
+  if (!div) return;
+  div.replaceChildren();
+  if (!uPlot || !currentTodRows || currentTodRows.length === 0) {
+    if (head) head.hidden = true;
+    return;
+  }
+  if (head) head.hidden = false;
+  // x = minute-of-day index; series = P avg (kW), V avg (V), I avg (A).
+  const xs = currentTodRows.map((_, i) => i);
+  const pAvg = currentTodRows.map((r) => r.p_avg_kW);
+  const vAvg = currentTodRows.map((r) => r.v_avg_V);
+  const iAvg = currentTodRows.map((r) => r.i_avg_A);
+  const plot = new uPlot({
+    width: div.clientWidth || 900,
+    height: 240,
+    series: [
+      { label: 'bin' },
+      { label: 'P avg (kW)', stroke: '#cc0000', width: 1.4 },
+      { label: 'V avg (V)', stroke: '#0066cc', width: 1, scale: 'v' },
+      { label: 'I avg (A)', stroke: '#009933', width: 1, scale: 'i' },
+    ],
+    scales: { x: { time: false } },
+    axes: [
+      { stroke: '#666', label: 'time-of-day bin' },
+      { stroke: '#666', label: 'P (kW)' },
+      { stroke: '#666', scale: 'v', side: 1, label: 'V' },
+    ],
+    legend: { live: true },
+  }, [xs, pAvg, vAvg, iAvg], div);
+  const resizeObs = new ResizeObserver(() => {
+    plot.setSize({ width: div.clientWidth, height: 240 });
+  });
+  resizeObs.observe(div);
+}
 
 // --- Summary rendering ------------------------------------------------------
 
@@ -573,6 +680,7 @@ function resetUi() {
   els.progressSec.hidden = true;
   els.sessionsSec.hidden = true;
   els.insightsSec.hidden = true;
+  { const s = document.getElementById('stats-section'); if (s) s.hidden = true; }
   els.eventsSec.hidden = true;
   els.snapshotsSec.hidden = true;
   els.controlsSec.hidden = true;
@@ -893,6 +1001,8 @@ async function exportHtmlReport() {
     title, config: currentConfig, records: scoped, spec,
     events: scopedEvents, snapshots: currentSnapshots,
     findings: scopedFindings,
+    wholeStats: currentRange ? null : currentStats,
+    narrative: currentRange ? null : currentNarrative,
   });
 }
 
