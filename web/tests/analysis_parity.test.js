@@ -12,6 +12,7 @@ import {
   wholeSessionStats, classifyItic, eventItic, timeOfDayProfile,
   detectCtReversal, ctReversalNotice,
 } from '../analysis.js';
+import { buildNarrative, narrativeMarkdown } from '../narrative.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..');
@@ -155,6 +156,32 @@ test('detectCtReversal: matches Python golden (mixed 70% negative session)', () 
   const notice = ctReversalNotice(js);
   assert.match(notice, /CT REVERSAL DETECTED/);
   assert.match(notice, /Reverse CTs/);
+});
+
+test('buildNarrative: matches Python golden exactly', () => {
+  const nb = baseMs;
+  const events = [
+    { id: 0, kind: 'dip', tStartMs: nb + 90000, tEndMs: nb + 92000, severity: 0.72, affectedPhases: ['c'] },
+    { id: 1, kind: 'outage', tStartMs: nb + 100000, tEndMs: nb + 1210000, severity: 0.0, affectedPhases: ['a', 'b', 'c'] },
+  ];
+  const findings = [
+    { id: 0, kind: 'pf_drift', severity: 'alert', headline: 'Power factor below 0.85 for 99.8% of non-outage time' },
+  ];
+  const stats = {
+    PF_total_avg: { mean: 0.81, p5: 0.70, p95: 0.95 },
+    _thresholds: { total_records: 590000 },
+  };
+  const ct = { reversed: true, frac_negative: 0.52 };
+  const js = buildNarrative(events, findings, stats, ct, {
+    config: { asset_name: 'MAC03' }, totalRecords: 590000, durationSecs: 604800.0,
+  });
+  assert.equal(js, golden.narrative);
+});
+
+test('narrativeMarkdown: wraps with a heading', () => {
+  const md = narrativeMarkdown('Hello.', { asset_name: 'ABC' });
+  assert.match(md, /^# Executive Summary — ABC/);
+  assert.match(md, /Hello\./);
 });
 
 test('timeOfDayProfile: matches Python golden row-for-row', () => {

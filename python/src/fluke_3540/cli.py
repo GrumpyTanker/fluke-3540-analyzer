@@ -600,14 +600,40 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     if getattr(args, "split_by", None):
         _run_split_by(args, outdir, store, events, config, nominal_ln_v)
 
-    return stats, tod_rows
+    # Auto-narrative / executive summary (Feature E) — needs stats + ct.
+    narrative = _write_narrative(outdir, store, events, findings, stats, ct, config)
+
+    return stats, tod_rows, narrative
+
+
+def _write_narrative(outdir: Path, store: ColumnStore, events, findings,
+                     stats: dict, ct: dict, config: dict) -> str:
+    """Build the executive summary, write narrative.md, return the prose."""
+    from .narrative import build_narrative, narrative_markdown
+    duration = None
+    if store.n:
+        duration = (store.last_end - store.first_start).total_seconds()
+    narrative = build_narrative(
+        events, findings, stats or None, ct, config=config,
+        total_records=store.n, duration_secs=duration,
+    )
+    (outdir / "narrative.md").write_text(
+        narrative_markdown(narrative, config), encoding="utf-8")
+    print("[narrative] wrote narrative.md")
+    return narrative
 
 
 def _write_summary_txt(outdir: Path, events: Sequence[Event],
                        snaps: Sequence[Snapshot],
                        findings: Sequence[Finding],
-                       config: dict) -> None:
+                       config: dict,
+                       narrative: str | None = None) -> None:
     lines: list[str] = ["Fluke 3540 FC Session Summary", "=" * 32, ""]
+    if narrative:
+        lines.append("Executive Summary")
+        lines.append("-" * 17)
+        lines.append(narrative)
+        lines.append("")
     if config:
         if config.get("asset_name"):
             lines.append(f"Asset:       {config['asset_name']}")
@@ -658,7 +684,8 @@ def _parse_quantities(arg: str | None, default: Sequence[str],
 def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
                   min_csv: Path, events: Sequence[Event],
                   snaps: Sequence[Snapshot], config: dict,
-                  stats: dict | None = None, tod_rows=None) -> None:
+                  stats: dict | None = None, tod_rows=None,
+                  narrative: str | None = None) -> None:
     full_qtys = _parse_quantities(args.plot, DEFAULT_PLOTS, FULL_QUANTITIES.keys())
     # Subset of zoom quantities that overlap with the user's --plot selection.
     zoom_qtys = [q for q in DEFAULT_ZOOM_PLOTS if q in full_qtys] or DEFAULT_ZOOM_PLOTS
@@ -704,7 +731,7 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
         xlsx_path = outdir / "report.xlsx"
         print(f"[render] xlsx workbook → {xlsx_path}")
         write_xlsx(min_csv, xlsx_path, config=config, csv_per_second_path=full_csv,
-                   stats=stats, tod_rows=tod_rows)
+                   stats=stats, tod_rows=tod_rows, narrative=narrative)
 
     html_path = outdir / "report.html"
     if not args.no_html:
@@ -727,6 +754,7 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
             summary_stats=_build_summary_stats(events, snaps),
             events=events, snapshots=snaps,
             findings=loaded_findings,
+            narrative=narrative,
         )
 
     if args.pdf:
@@ -869,8 +897,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # Post-detection analysis features (markers, stats, tod, split) run on
         # the in-memory store + on-disk CSVs.
-        stats, tod_rows = _run_extra_analyses(
+        stats, tod_rows, narrative = _run_extra_analyses(
             args, outdir, store, events, findings, config, full_csv, min_csv)
+        # Re-write summary.txt with the executive narrative at the top.
+        _write_summary_txt(outdir, events, snaps, findings, config,
+                           narrative=narrative)
 
         if getattr(args, "json_mode", False):
             _emit_json(events, snaps, findings, config)
@@ -889,7 +920,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.plot = ",".join(picked_qtys)
 
         _render_phase(args, outdir, full_csv, min_csv, events, snaps, config,
-                      stats=stats, tod_rows=tod_rows)
+                      stats=stats, tod_rows=tod_rows, narrative=narrative)
         print(f"[done] {outdir}")
         return 0
 

@@ -348,5 +348,6 @@
     "negative_records": 70,
     "mean_p_w": -12000.0,
     "threshold": 0.5
-  }
+  },
+  "narrative": "Asset MAC03 captured over 168.0 h (590,000 one-second records). The most significant event was a 18.5 min outage at 2024-01-13 22:01 UTC, preceded by a phase-c dip to 72%. Power factor (total) averaged 0.81 (p5 0.70, p95 0.95). Power factor below 0.85 for 99.8% of non-outage time. WARNING: real power is negative for 52% of non-outage time \u2014 the iFlex CTs are likely reversed; re-run with --reverse-cts. Bottom line: 1 alert-level finding(s) warrant follow-up."
 }

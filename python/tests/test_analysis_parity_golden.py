@@ -20,6 +20,8 @@ from fluke_3540.analysis import (
     whole_session_stats,
 )
 from fluke_3540.events import Event
+from fluke_3540.insights import Finding
+from fluke_3540.narrative import build_narrative
 from fluke_3540.store import ColumnStore
 
 from conftest import make_records, plant_window
@@ -82,6 +84,30 @@ def test_emit_analysis_golden():
     ct_store = ColumnStore.from_records(make_records(100, overrides=ct_overrides))
     ct = detect_ct_reversal(ct_store)
 
+    # Narrative golden — fixed events/findings/stats/ct so the JS port can match.
+    narr_base = dt.datetime(2024, 1, 13, 22, 0, 0, tzinfo=dt.timezone.utc)
+    narr_events = [
+        Event(0, "dip", narr_base + dt.timedelta(seconds=90),
+              narr_base + dt.timedelta(seconds=92), 0.72, ("c",)),
+        Event(1, "outage", narr_base + dt.timedelta(seconds=100),
+              narr_base + dt.timedelta(seconds=1210), 0.0, ("a", "b", "c")),
+    ]
+    narr_findings = [
+        Finding(0, "pf_drift", "alert",
+                "Power factor below 0.85 for 99.8% of non-outage time",
+                "", (), ()),
+    ]
+    narr_stats = {
+        "PF_total_avg": {"mean": 0.81, "p5": 0.70, "p95": 0.95},
+        "_thresholds": {"total_records": 590000},
+    }
+    narr_ct = {"reversed": True, "frac_negative": 0.52}
+    narrative = build_narrative(
+        narr_events, narr_findings, narr_stats, narr_ct,
+        config={"asset_name": "MAC03"}, total_records=590000,
+        duration_secs=604800.0,
+    )
+
     golden = {
         "stats": stats,
         "tod_rows": tod,
@@ -89,6 +115,7 @@ def test_emit_analysis_golden():
         "itic": itic,
         "event_itic": event_itic_out,
         "ct_reversal": ct,
+        "narrative": narrative,
     }
     GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     GOLDEN_PATH.write_text(json.dumps(golden, indent=2), encoding="utf-8")

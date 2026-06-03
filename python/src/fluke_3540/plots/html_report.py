@@ -209,10 +209,17 @@ def render_report_html(
     charts: Iterable[tuple[str, bytes]],
     findings: Sequence[Finding] = (),
     generated_at: dt.datetime | None = None,
+    narrative: str | None = None,
 ) -> str:
     generated_at = generated_at or dt.datetime.now(dt.timezone.utc)
     body = []
     body.append(f"<h1>{html.escape(title)}</h1>")
+    if narrative:
+        body.append(
+            "<section class='narrative'><h2>Executive summary</h2><p>"
+            + html.escape(narrative).replace("\n", "<br>")
+            + "</p></section>"
+        )
     body.append("<h2>Summary</h2>")
     body.append(_summary_dl_html(summary_stats, config))
     if findings:
@@ -246,6 +253,7 @@ def write_html_report(
     snapshots: Sequence[Snapshot],
     findings: Sequence[Finding] = (),
     title: str | None = None,
+    narrative: str | None = None,
 ) -> Path:
     """High-level wrapper: read PNGs from charts_dir, write a self-contained HTML report.
 
@@ -264,7 +272,7 @@ def write_html_report(
         render_report_html(
             title=title, config=config, summary_stats=summary_stats,
             events=events, snapshots=snapshots, charts=charts,
-            findings=findings,
+            findings=findings, narrative=narrative,
         ),
         encoding="utf-8",
     )

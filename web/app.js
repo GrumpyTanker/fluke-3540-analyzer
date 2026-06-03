@@ -14,6 +14,7 @@ import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
 import { ColumnStore } from './column_store.js';
 import { wholeSessionStats, timeOfDayProfile, detectCtReversal, ctReversalNotice } from './analysis.js';
+import { buildNarrative } from './narrative.js';
 import {
   computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
   peakHoursToString, saveTariff,
@@ -374,6 +375,7 @@ async function onParseDone(msg) {
     renderSnapshotsList();
     renderQuantityGrid();
     renderStatsPanel(spec);
+    renderNarrative(spec);
     checkCtReversal(spec);
     renderSessionsBar();
     els.insightsSec.hidden = currentFindings.length === 0;
@@ -435,6 +437,7 @@ async function onParseDoneColumnar(store) {
     renderSnapshotsList();
     renderQuantityGrid();
     renderStatsPanel(spec);
+    renderNarrative(spec);
     checkCtReversal(spec);
     renderSessionsBar();
     els.insightsSec.hidden = currentFindings.length === 0;
@@ -520,6 +523,24 @@ function checkCtReversal(spec) {
   if (!res.reversed) { banner.hidden = true; return; }
   if (msg) msg.textContent = ' ' + ctReversalNotice(res);
   banner.hidden = false;
+}
+
+// Executive summary (Feature E) — built from events + insights + stats + ct.
+function renderNarrative(spec) {
+  const sec = document.getElementById('narrative-section');
+  const el = document.getElementById('narrative-text');
+  if (!sec || !el) return;
+  const src = dataSource();
+  if (!src) { sec.hidden = true; return; }
+  let ct = null;
+  try { ct = detectCtReversal(src, spec); } catch (_) { /* ignore */ }
+  const durationSecs = currentTimeRangeMs
+    ? (currentTimeRangeMs[1] - currentTimeRangeMs[0]) / 1000 : null;
+  currentNarrative = buildNarrative(currentEvents, currentFindings, currentStats, ct, {
+    config: currentConfig, totalRecords: currentRecordCount, durationSecs,
+  });
+  el.textContent = currentNarrative;
+  sec.hidden = false;
 }
 
 function renderStatsPanel(spec) {
@@ -700,6 +721,7 @@ function resetUi() {
   els.sessionsSec.hidden = true;
   els.insightsSec.hidden = true;
   { const s = document.getElementById('stats-section'); if (s) s.hidden = true; }
+  { const s = document.getElementById('narrative-section'); if (s) s.hidden = true; }
   els.eventsSec.hidden = true;
   els.snapshotsSec.hidden = true;
   els.controlsSec.hidden = true;

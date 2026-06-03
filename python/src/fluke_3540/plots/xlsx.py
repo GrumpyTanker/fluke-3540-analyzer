@@ -184,6 +184,7 @@ def write_xlsx(
     *, csv_per_second_path: Path | None = None,
     stats: Mapping | None = None,
     tod_rows=None,
+    narrative: str | None = None,
 ) -> Path:
     """Build the chartable XLSX.
 
@@ -315,6 +316,10 @@ def write_xlsx(
     ws_sum["A1"] = "Fluke 3540 FC Session Summary"
     ws_sum["A1"].font = Font(size=16, bold=True)
     ws_sum.merge_cells("A1:C1")
+    if narrative:
+        ws_sum["A2"] = "Executive summary: " + narrative
+        ws_sum["A2"].alignment = Alignment(wrap_text=True, vertical="top")
+        ws_sum.merge_cells("A2:F2")
 
     cfg = config or {}
     total = summary["sec_import"] + summary["sec_export"] + summary["sec_idle"]
