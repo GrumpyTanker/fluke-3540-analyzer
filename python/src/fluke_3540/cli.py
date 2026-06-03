@@ -456,6 +456,7 @@ def _write_tod(outdir: Path, store: ColumnStore, args: argparse.Namespace) -> No
                         r["i_avg_A"], r["i_min_A"], r["i_max_A"]])
     print(f"[tod] time-of-day profile ({args.tod_profile}) → "
           f"time_of_day_profile.csv ({len(rows)} bins)")
+    return rows
 
 
 def _run_split_by(args: argparse.Namespace, outdir: Path, store: ColumnStore,
@@ -558,13 +559,14 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     if markers:
         _write_markers(outdir, markers, events)
 
+    tod_rows = []
     if getattr(args, "tod_profile", None):
-        _write_tod(outdir, store, args)
+        tod_rows = _write_tod(outdir, store, args)
 
     if getattr(args, "split_by", None):
         _run_split_by(args, outdir, store, events, config, nominal_ln_v)
 
-    return stats
+    return stats, tod_rows
 
 
 def _write_summary_txt(outdir: Path, events: Sequence[Event],
@@ -621,7 +623,8 @@ def _parse_quantities(arg: str | None, default: Sequence[str],
 
 def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
                   min_csv: Path, events: Sequence[Event],
-                  snaps: Sequence[Snapshot], config: dict) -> None:
+                  snaps: Sequence[Snapshot], config: dict,
+                  stats: dict | None = None, tod_rows=None) -> None:
     full_qtys = _parse_quantities(args.plot, DEFAULT_PLOTS, FULL_QUANTITIES.keys())
     # Subset of zoom quantities that overlap with the user's --plot selection.
     zoom_qtys = [q for q in DEFAULT_ZOOM_PLOTS if q in full_qtys] or DEFAULT_ZOOM_PLOTS
@@ -666,7 +669,8 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
     if not args.no_xlsx:
         xlsx_path = outdir / "report.xlsx"
         print(f"[render] xlsx workbook → {xlsx_path}")
-        write_xlsx(min_csv, xlsx_path, config=config, csv_per_second_path=full_csv)
+        write_xlsx(min_csv, xlsx_path, config=config, csv_per_second_path=full_csv,
+                   stats=stats, tod_rows=tod_rows)
 
     html_path = outdir / "report.html"
     if not args.no_html:
@@ -828,8 +832,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # Post-detection analysis features (markers, stats, tod, split) run on
         # the in-memory store + on-disk CSVs.
-        _run_extra_analyses(args, outdir, store, events, findings, config,
-                            full_csv, min_csv)
+        stats, tod_rows = _run_extra_analyses(
+            args, outdir, store, events, findings, config, full_csv, min_csv)
 
         if getattr(args, "json_mode", False):
             _emit_json(events, snaps, findings, config)
@@ -847,7 +851,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             events = picked_events
             args.plot = ",".join(picked_qtys)
 
-        _render_phase(args, outdir, full_csv, min_csv, events, snaps, config)
+        _render_phase(args, outdir, full_csv, min_csv, events, snaps, config,
+                      stats=stats, tod_rows=tod_rows)
         print(f"[done] {outdir}")
         return 0
 
