@@ -4,27 +4,26 @@
 // insight_rules section. Same Finding shape, same rule logic, same
 // headline/detail templates so the web UI and CLI report look alike.
 
+import { asColumnSource } from './column_source.js';
+
 function ruleVal(spec, key, fallback) {
   const v = spec?.insight_rules?.[key];
   return v === undefined || v === null ? fallback : Number(v);
 }
 
-function fieldIndex(spec, name) {
-  const f = spec.fields.find((f) => f.name === name);
-  if (!f) throw new Error(`spec missing field ${name}`);
-  return f.index;
+// `src` is a column source (asColumnSource result). col() returns the channel
+// as an Array for the .filter()/.map() patterns the rules use.
+function col(src, name) {
+  return Array.from(src.column(name));
 }
 
-function col(records, spec, name) {
-  const idx = fieldIndex(spec, name);
-  return records.map((r) => r.floats[idx]);
-}
-
-function nonOutageMask(records, spec) {
-  const a = col(records, spec, 'V_LN_a_avg_V');
-  const b = col(records, spec, 'V_LN_b_avg_V');
-  const c = col(records, spec, 'V_LN_c_avg_V');
-  return records.map((_, i) => a[i] > 50 && b[i] > 50 && c[i] > 50);
+function nonOutageMask(src) {
+  const a = src.column('V_LN_a_avg_V');
+  const b = src.column('V_LN_b_avg_V');
+  const c = src.column('V_LN_c_avg_V');
+  const out = new Array(src.length);
+  for (let i = 0; i < src.length; i++) out[i] = a[i] > 50 && b[i] > 50 && c[i] > 50;
+  return out;
 }
 
 function mean(arr) {
@@ -32,6 +31,14 @@ function mean(arr) {
   let s = 0;
   for (const v of arr) s += v;
   return s / arr.length;
+}
+
+// Loop-based max — Math.max(...arr) overflows the call stack on a 7-day
+// (~590 K element) session.
+function arrayMax(arr) {
+  let m = -Infinity;
+  for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+  return m;
 }
 
 // --- Individual rules -------------------------------------------------------
@@ -96,12 +103,12 @@ function ruleOutageSignatures(events, spec) {
   return findings;
 }
 
-function rulePhaseAsymmetry(records, spec) {
+function rulePhaseAsymmetry(src, spec) {
   const threshold = ruleVal(spec, 'phase_asymmetry_pct', 2.0);
-  const notOut = nonOutageMask(records, spec);
-  const a = col(records, spec, 'V_LN_a_avg_V');
-  const b = col(records, spec, 'V_LN_b_avg_V');
-  const c = col(records, spec, 'V_LN_c_avg_V');
+  const notOut = nonOutageMask(src);
+  const a = col(src, 'V_LN_a_avg_V');
+  const b = col(src, 'V_LN_b_avg_V');
+  const c = col(src, 'V_LN_c_avg_V');
   const aVals = a.filter((_, i) => notOut[i]);
   const bVals = b.filter((_, i) => notOut[i]);
   const cVals = c.filter((_, i) => notOut[i]);
@@ -133,14 +140,14 @@ function rulePhaseAsymmetry(records, spec) {
   }];
 }
 
-function rulePfDrift(records, spec) {
+function rulePfDrift(src, spec) {
   const threshold = ruleVal(spec, 'pf_drift_threshold', 0.85);
   const minFrac = ruleVal(spec, 'pf_drift_min_fraction', 0.10);
-  const notOut = nonOutageMask(records, spec);
-  const pf = col(records, spec, 'PF_total_avg');
-  const q = col(records, spec, 'Q_total_avg_VAR');
-  const s = col(records, spec, 'S_total_avg_VA');
-  const lowMask = records.map((_, i) =>
+  const notOut = nonOutageMask(src);
+  const pf = col(src, 'PF_total_avg');
+  const q = col(src, 'Q_total_avg_VAR');
+  const s = col(src, 'S_total_avg_VA');
+  const lowMask = Array.from({ length: src.length }, (_, i) =>
     notOut[i] && Math.abs(pf[i]) > 0 && Math.abs(pf[i]) < threshold
   );
   const total = lowMask.length;
@@ -171,15 +178,15 @@ function rulePfDrift(records, spec) {
   }];
 }
 
-function ruleImbalanceSustained(records, spec) {
+function ruleImbalanceSustained(src, spec) {
   const pctThreshold = ruleVal(spec, 'imbalance_sustained_pct', 1.5);
   const secsThreshold = Math.round(ruleVal(spec, 'imbalance_sustained_secs', 60));
-  const notOut = nonOutageMask(records, spec);
-  const a = col(records, spec, 'V_LN_a_avg_V');
-  const b = col(records, spec, 'V_LN_b_avg_V');
-  const c = col(records, spec, 'V_LN_c_avg_V');
-  const imbal = new Array(records.length).fill(0);
-  for (let i = 0; i < records.length; i++) {
+  const notOut = nonOutageMask(src);
+  const a = col(src, 'V_LN_a_avg_V');
+  const b = col(src, 'V_LN_b_avg_V');
+  const c = col(src, 'V_LN_c_avg_V');
+  const imbal = new Array(src.length).fill(0);
+  for (let i = 0; i < src.length; i++) {
     if (!notOut[i]) continue;
     const m = (a[i] + b[i] + c[i]) / 3;
     if (m <= 50) continue;
@@ -220,11 +227,12 @@ function ruleImbalanceSustained(records, spec) {
   }];
 }
 
-function ruleFreqStiffness(records, events, spec) {
+function ruleFreqStiffness(src, events, spec) {
   const thresholdHz = ruleVal(spec, 'freq_stiffness_hz', 0.05);
   const minCount = Math.round(ruleVal(spec, 'freq_stiffness_min_count', 3));
-  const freq = col(records, spec, 'freq_avg_Hz');
-  const indexByTime = new Map(records.map((r, i) => [r.startMs, i]));
+  const freq = col(src, 'freq_avg_Hz');
+  const indexByTime = new Map();
+  for (let i = 0; i < src.length; i++) indexByTime.set(src.startMs(i), i);
   const correlations = [];
   for (const ev of events) {
     if (ev.kind !== 'power_step') continue;
@@ -256,11 +264,11 @@ function ruleFreqStiffness(records, events, spec) {
   }];
 }
 
-function ruleOutageFrequency(records, events, spec) {
+function ruleOutageFrequency(src, events, spec) {
   const perDayThreshold = ruleVal(spec, 'outage_frequency_per_day', 1.0);
   const outages = events.filter((e) => e.kind === 'outage');
-  if (outages.length === 0 || records.length === 0) return [];
-  const durSecs = (records[records.length - 1].endMs - records[0].startMs) / 1000;
+  if (outages.length === 0 || src.length === 0) return [];
+  const durSecs = (src.endMs(src.length - 1) - src.startMs(0)) / 1000;
   if (durSecs <= 0) return [];
   const days = durSecs / 86400;
   const rate = outages.length / days;
@@ -281,17 +289,17 @@ function ruleOutageFrequency(records, events, spec) {
   }];
 }
 
-function ruleCurrentSpikeRatio(records, spec, opts = {}) {
+function ruleCurrentSpikeRatio(src, spec, opts = {}) {
   const threshold = ruleVal(spec, 'current_to_mean_ratio_alert', 5.0);
   const breakerA = Number(opts.breakerRatingA) > 0 ? Number(opts.breakerRatingA) : null;
   const findings = [];
-  const notOut = nonOutageMask(records, spec);
+  const notOut = nonOutageMask(src);
   for (const phase of ['a', 'b', 'c']) {
-    const iMax = col(records, spec, `I_${phase}_max_A`);
+    const iMax = col(src, `I_${phase}_max_A`);
     const valid = iMax.filter((_, i) => notOut[i]);
     if (valid.length === 0) continue;
     const m = mean(valid);
-    const peak = Math.max(...valid);
+    const peak = arrayMax(valid);
     if (m <= 0) continue;
     const ratio = peak / m;
     if (ratio < threshold) continue;
@@ -329,17 +337,17 @@ function ruleCurrentSpikeRatio(records, spec, opts = {}) {
   return findings;
 }
 
-function ruleBreakerMargin(records, spec, opts = {}) {
+function ruleBreakerMargin(src, spec, opts = {}) {
   const breakerA = Number(opts.breakerRatingA) > 0 ? Number(opts.breakerRatingA) : null;
   if (!breakerA) return [];
-  const notOut = nonOutageMask(records, spec);
+  const notOut = nonOutageMask(src);
   let worstPhase = null;
   let worstPeak = 0;
   for (const phase of ['a', 'b', 'c']) {
-    const iMax = col(records, spec, `I_${phase}_max_A`);
+    const iMax = col(src, `I_${phase}_max_A`);
     const valid = iMax.filter((_, i) => notOut[i]);
     if (!valid.length) continue;
-    const peak = Math.max(...valid);
+    const peak = arrayMax(valid);
     if (peak > worstPeak) { worstPeak = peak; worstPhase = phase; }
   }
   if (!worstPhase || worstPeak <= breakerA) return [];
@@ -363,16 +371,17 @@ function ruleBreakerMargin(records, spec, opts = {}) {
 
 const SEV_RANK = { alert: 0, warn: 1, info: 2 };
 
-export function analyzeInsights(records, events, spec, _snapshots = [], _config = null, opts = {}) {
+export function analyzeInsights(source, events, spec, _snapshots = [], _config = null, opts = {}) {
+  const src = asColumnSource(source, spec);
   const raw = [
     ...ruleOutageSignatures(events, spec),
-    ...rulePhaseAsymmetry(records, spec),
-    ...rulePfDrift(records, spec),
-    ...ruleImbalanceSustained(records, spec),
-    ...ruleFreqStiffness(records, events, spec),
-    ...ruleOutageFrequency(records, events, spec),
-    ...ruleCurrentSpikeRatio(records, spec, opts),
-    ...ruleBreakerMargin(records, spec, opts),
+    ...rulePhaseAsymmetry(src, spec),
+    ...rulePfDrift(src, spec),
+    ...ruleImbalanceSustained(src, spec),
+    ...ruleFreqStiffness(src, events, spec),
+    ...ruleOutageFrequency(src, events, spec),
+    ...ruleCurrentSpikeRatio(src, spec, opts),
+    ...ruleBreakerMargin(src, spec, opts),
   ];
   raw.sort((a, b) => (SEV_RANK[a.severity] - SEV_RANK[b.severity]) || a.kind.localeCompare(b.kind));
   return raw.map((f, i) => ({ ...f, id: i }));

@@ -26,13 +26,28 @@ function fieldIndex(spec, name) {
  * @param {(range: {startMs: number, endMs: number} | null) => void} onRangeChange
  * @returns {{ destroy: () => void, setRange: (r) => void }}
  */
-export function renderRangeSelector(container, records, spec, onRangeChange) {
+export function renderRangeSelector(container, source, spec, onRangeChange) {
   const uPlot = uplotOrThrow();
   container.replaceChildren();
-  if (records.length === 0) return { destroy() {}, setRange() {} };
-  const pIdx = fieldIndex(spec, 'P_total_avg_W');
-  const xs = records.map((r) => r.startMs / 1000);
-  const ys = records.map((r) => r.floats[pIdx] / 1000);
+  let xs;
+  let ys;
+  if (source && source.cols && source.startMs instanceof Float64Array) {
+    // ColumnStore path — read the P_total column directly (no per-record alloc).
+    if (source.n === 0) return { destroy() {}, setRange() {} };
+    const p = source.cols.P_total_avg_W;
+    xs = new Array(source.n);
+    ys = new Array(source.n);
+    for (let i = 0; i < source.n; i++) {
+      xs[i] = source.startMs[i] / 1000;
+      ys[i] = p[i] / 1000;
+    }
+  } else {
+    const records = source;
+    if (records.length === 0) return { destroy() {}, setRange() {} };
+    const pIdx = fieldIndex(spec, 'P_total_avg_W');
+    xs = records.map((r) => r.startMs / 1000);
+    ys = records.map((r) => r.floats[pIdx] / 1000);
+  }
 
   const label = document.createElement('div');
   label.className = 'range-label';

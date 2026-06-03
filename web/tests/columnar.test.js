@@ -20,6 +20,9 @@ import {
   parseTrendColumnarStream,
 } from '../parser.js';
 import { ColumnStore, STORE_COLUMNS } from '../column_store.js';
+import { detectEvents } from '../events.js';
+import { pickSnapshots } from '../snapshots.js';
+import { analyzeInsights } from '../insights.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..');
@@ -172,6 +175,48 @@ test('ColumnStore.fromRecords / toRecords round-trips retained channels', () => 
   assert.equal(back.length, records.length);
   assert.equal(back[3].floats[fi], records[3].floats[fi]);
   assert.equal(back[3].startMs, records[3].startMs);
+});
+
+test('analysis engines: ColumnStore path == records path', () => {
+  // Build records with planted events, then a store from those records, and
+  // assert detectEvents / pickSnapshots / analyzeInsights agree.
+  const nameToIdx = new Map(spec.fields.map((f) => [f.name, f.index]));
+  const baseMs = Date.UTC(2024, 0, 13, 22, 0, 0);
+  const N = 400;
+  const records = [];
+  for (let n = 0; n < N; n++) {
+    const floats = new Float32Array(spec.data_floats);
+    for (const ph of ['a', 'b', 'c']) {
+      for (const st of ['min', 'max', 'avg']) {
+        floats[nameToIdx.get(`V_LN_${ph}_${st}_V`)] = 277.0;
+        floats[nameToIdx.get(`I_${ph}_${st}_A`)] = 100.0;
+      }
+    }
+    floats[nameToIdx.get('freq_avg_Hz')] = 60.0;
+    floats[nameToIdx.get('P_total_avg_W')] = 50000.0;
+    floats[nameToIdx.get('PF_total_avg')] = 0.99;
+    // Plant an outage 100..119 and a dip 200..204.
+    if (n >= 100 && n <= 119) {
+      for (const ph of ['a', 'b', 'c']) {
+        for (const st of ['min', 'max', 'avg']) floats[nameToIdx.get(`V_LN_${ph}_${st}_V`)] = 0;
+      }
+    }
+    if (n >= 200 && n <= 204) floats[nameToIdx.get('V_LN_a_min_V')] = 200.0;
+    records.push({ index: n, startMs: baseMs + n * 1000, endMs: baseMs + (n + 1) * 1000, floats });
+  }
+  const store = ColumnStore.fromRecords(records, spec);
+
+  const evRec = detectEvents(records, spec, { nominalLnV: 277.0 });
+  const evStore = detectEvents(store, spec, { nominalLnV: 277.0 });
+  assert.deepEqual(evStore, evRec, 'events differ between store and records path');
+
+  const snRec = pickSnapshots(records, evRec, spec, { n: 2, windowSecs: 60, minSeparationSecs: 1 });
+  const snStore = pickSnapshots(store, evStore, spec, { n: 2, windowSecs: 60, minSeparationSecs: 1 });
+  assert.deepEqual(snStore, snRec, 'snapshots differ');
+
+  const inRec = analyzeInsights(records, evRec, spec);
+  const inStore = analyzeInsights(store, evStore, spec);
+  assert.deepEqual(inStore.map((f) => f.kind), inRec.map((f) => f.kind), 'insights differ');
 });
 
 test('ColumnStore.fromTransfer wraps a worker payload', () => {

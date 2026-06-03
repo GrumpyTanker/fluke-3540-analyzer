@@ -23,12 +23,17 @@ export const STORE_COLUMNS = Object.freeze([
   'freq_avg_Hz',
   // Power / apparent / reactive / power-factor totals
   'P_total_avg_W', 'S_total_avg_VA', 'Q_total_avg_VAR', 'PF_total_avg',
+  'DPF_total_avg',
   // Per-row energy (per-bucket kWh roll-ups)
   'Wh_total',
   // THD per phase (IEEE 519) — V and I, avg only
   'V_THD_pct_a_avg', 'V_THD_pct_b_avg', 'V_THD_pct_c_avg',
   'I_THD_pct_a_avg', 'I_THD_pct_b_avg', 'I_THD_pct_c_avg',
 ]);
+
+// Chart series the web UI renders straight from the store. If a chart needs a
+// channel not in STORE_COLUMNS the renderer must fall back to read-through.
+export const CHART_COLUMNS = STORE_COLUMNS;
 
 /**
  * Resolve STORE_COLUMNS to spec float indices, once.

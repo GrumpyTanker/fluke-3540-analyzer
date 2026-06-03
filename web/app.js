@@ -12,6 +12,7 @@ import { downloadCompareHtmlReport, downloadHtmlReport } from './html_report.js'
 import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
+import { ColumnStore } from './column_store.js';
 import {
   computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
   peakHoursToString, saveTariff,
@@ -96,7 +97,9 @@ const ms = new MultiSession();
 let cachedSpec = null;
 let currentArrayBuffer = null;
 let currentConfig = null;     // parsed ES.NNN-config.json companion (or null)
-let currentRecords = null;    // full parsed Records array (kept in memory)
+let currentStore = null;      // ColumnStore (memory-bounded; analysis + charts)
+let currentRecords = null;    // record array — only for small/CSV paths or read-through
+let currentFile = null;       // the dropped File/Blob, kept for read-through export
 let currentRecordCount = 0;
 let currentTimeRangeMs = null;
 let currentEvents = [];       // detected events for currentRecords
@@ -220,9 +223,41 @@ async function parseFile(file) {
   hideError();
   els.summarySec.hidden = true;
   els.progressSec.hidden = false;
-  setProgress(0, file.size, 'reading file');
-  currentArrayBuffer = await file.arrayBuffer();
-  await parseBuffer();
+  currentFile = file;            // kept for read-through CSV/zoom export
+  currentArrayBuffer = null;     // streaming path never holds the whole buffer
+  await parseStreaming(file);
+}
+
+// Streaming columnar path (Feature A): hand the File to the worker, which reads
+// it in 8 MB record-aligned chunks and transfers back typed-array columns. The
+// full 438 MB ArrayBuffer is never resident on either thread.
+async function parseStreaming(file) {
+  hideError();
+  els.summarySec.hidden = true;
+  els.progressSec.hidden = false;
+  const spec = await getSpec();
+  const reverseCts = selectedReversePhases();
+
+  setProgress(0, 100, 'parsing (streaming)');
+  if (currentWorker) currentWorker.terminate();
+  currentWorker = new Worker(new URL('./parser_worker.js', import.meta.url),
+                             { type: 'module' });
+  currentWorker.onmessage = (event) => {
+    const msg = event.data;
+    if (msg.type === 'progress') {
+      setProgress(msg.done, msg.total,
+        `parsing record ${msg.done.toLocaleString()} / ${msg.total.toLocaleString()}`);
+    } else if (msg.type === 'done-columnar') {
+      const store = ColumnStore.fromTransfer(msg);
+      onParseDoneColumnar(store).catch(showError);
+    } else if (msg.type === 'error') {
+      showError(new Error(msg.message));
+    }
+  };
+  currentWorker.onerror = (event) => {
+    showError(new Error(`Worker error: ${event.message ?? 'unknown'}`));
+  };
+  currentWorker.postMessage({ type: 'parse-stream', spec, blob: file, reverseCts });
 }
 
 async function parseBuffer() {
@@ -297,6 +332,7 @@ function selectedReversePhases() {
 
 async function onParseDone(msg) {
   currentRecords = msg.records;
+  currentStore = null;          // legacy/CSV/small path keeps record objects
   currentRecordCount = msg.recordCount;
   currentFileHash = msg.fileHash ?? currentFileHash;
   if (msg.records.length > 0) {
@@ -359,6 +395,109 @@ async function onParseDone(msg) {
     els.progressSec.hidden = true;
   }
 }
+
+// Columnar parse-done: analysis + charts run on the ColumnStore (memory-bounded);
+// currentRecords stays null so the 7-day file never re-materialises 590 K objects.
+async function onParseDoneColumnar(store) {
+  currentStore = store;
+  currentRecords = null;
+  currentRecordCount = store.n;
+  if (store.n > 0) {
+    currentTimeRangeMs = [store.firstStartMs, store.lastEndMs];
+  } else {
+    currentTimeRangeMs = null;
+  }
+  els.progressSec.hidden = true;
+  renderSummary();
+  els.summarySec.hidden = false;
+
+  setProgress(0, 100, 'detecting events');
+  els.progressSec.hidden = false;
+  await new Promise((r) => setTimeout(r, 0));
+  try {
+    const spec = await getSpec();
+    currentEvents = detectEvents(currentStore, spec);
+    currentSnapshots = pickSnapshots(currentStore, currentEvents, spec, { n: 3 });
+    currentFindings = analyzeInsights(currentStore, currentEvents, spec,
+                                      currentSnapshots, currentConfig,
+                                      { breakerRatingA: loadBreakerRating() });
+    ms.add({
+      records: null, store: currentStore,
+      events: currentEvents, snapshots: currentSnapshots,
+      findings: currentFindings, config: currentConfig,
+      fileHash: currentFileHash, file: currentFile,
+    });
+    renderInsights();
+    renderEventsTable();
+    renderSnapshotsList();
+    renderQuantityGrid();
+    renderStatsPanel(spec);
+    renderSessionsBar();
+    els.insightsSec.hidden = currentFindings.length === 0;
+    els.sessionsSec.hidden = false;
+    els.eventsSec.hidden = false;
+    els.snapshotsSec.hidden = currentSnapshots.length === 0;
+    els.controlsSec.hidden = false;
+    els.exportSec.hidden = false;
+    els.rangeSec.hidden = false;
+    els.tariffSec.hidden = false;
+    setupRangeSelector(spec);
+    loadTariffIntoForm();
+    renderTariffResult();
+    tabState.hasSession = true;
+    updateTabUnlocks();
+    if (tabState.current === 'import') activateTab('explore');
+  } catch (e) {
+    showError(e);
+    return;
+  } finally {
+    els.progressSec.hidden = true;
+  }
+}
+
+// The data source the analysis / chart / range engines should read: the store
+// when present (streaming path), else the records array (small / CSV path).
+function dataSource() {
+  return currentStore || currentRecords;
+}
+
+// Per-session column accessor for compare-overlay charts: reads from a
+// session's ColumnStore when present, else its records array. Only the few
+// channels FULL_QUANTITIES references (all retained) are needed here.
+function sessionAccessor(session, spec, name) {
+  if (session.store) {
+    const col = session.store.cols[name];
+    const n = session.store.n;
+    return {
+      n,
+      startMs: (i) => session.store.startMs[i],
+      value: (i) => (col ? col[i] : 0),
+      base: n ? session.store.startMs[0] : 0,
+    };
+  }
+  const recs = session.records || [];
+  const fi = new Map(spec.fields.map((f) => [f.name, f.index]));
+  const idx = fi.get(name);
+  return {
+    n: recs.length,
+    startMs: (i) => recs[i].startMs,
+    value: (i) => recs[i].floats[idx],
+    base: recs.length ? recs[0].startMs : 0,
+  };
+}
+
+// Materialise a records array for an export that genuinely needs every field
+// (CSV / XLSX / bundle). For the store path this is a transient allocation that
+// is dropped when the export finishes — it is NOT kept resident.
+function recordsForExport(spec) {
+  if (currentRecords) return currentRecords;
+  if (currentStore) return currentStore.toRecords(spec);
+  return [];
+}
+
+// Statistics panel (Feature B) — populated from whole_session_stats; safe no-op
+// until the stats UI is wired so the parse flow never throws on older markup.
+function renderStatsPanel(_spec) { /* Feature B fills this in */ }
 
 // --- Summary rendering ------------------------------------------------------
 
@@ -493,11 +632,11 @@ function getTariffFromForm() {
 
 async function renderTariffResult() {
   els.tariffResult.replaceChildren();
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const t = getTariffFromForm();
   if (t.peakRate === 0 && t.offpeakRate === 0) return;
   const spec = await getSpec();
-  const cost = computeCost(currentRecords, spec, t);
+  const cost = computeCost(dataSource(), spec, t);
   const fmt = (n) => `${t.currency} ${n.toFixed(2)}`;
   const fmtKwh = (n) => `${n.toFixed(2)} kWh`;
   const dl = document.createElement('dl');
@@ -573,16 +712,28 @@ function switchToSession(label) {
   if (!ms.setActive(label)) return;
   const s = ms.getActive();
   if (!s) return;
-  currentRecords = s.records;
-  currentRecordCount = s.records.length;
+  currentRecords = s.records || null;
+  currentStore = s.store || null;
+  currentFile = s.file || null;
   currentEvents = s.events;
   currentSnapshots = s.snapshots;
   currentFindings = s.findings;
   currentConfig = s.config;
   currentArrayBuffer = null;  // can't re-parse a switched-to session
-  currentTimeRangeMs = s.records.length
-    ? [s.records[0].startMs, s.records[s.records.length - 1].endMs]
-    : null;
+  const ds = currentStore || currentRecords;
+  if (currentStore) {
+    currentRecordCount = currentStore.n;
+    currentTimeRangeMs = currentStore.n
+      ? [currentStore.firstStartMs, currentStore.lastEndMs] : null;
+  } else if (currentRecords) {
+    currentRecordCount = currentRecords.length;
+    currentTimeRangeMs = currentRecords.length
+      ? [currentRecords[0].startMs, currentRecords[currentRecords.length - 1].endMs]
+      : null;
+  } else {
+    currentRecordCount = 0;
+    currentTimeRangeMs = null;
+  }
   renderSummary();
   renderInsights();
   renderEventsTable();
@@ -593,7 +744,7 @@ function switchToSession(label) {
 function setupRangeSelector(spec) {
   if (rangeSelector) rangeSelector.destroy();
   rangeSelector = renderRangeSelector(
-    els.rangeContainer, currentRecords, spec, (range) => {
+    els.rangeContainer, dataSource(), spec, (range) => {
       currentRange = range;
       const hash = rangeToHash(range);
       if (hash) history.replaceState(null, '', hash);
@@ -675,9 +826,9 @@ function scrollToEvent(eventId) {
 }
 
 async function exportXlsx() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
-  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const scoped = scopeRecordsToRange(recordsForExport(spec), currentRange);
   const blob = buildXlsx({ records: scoped, spec, config: currentConfig });
   const name = (currentConfig?.asset_name ?? 'fluke_session').replace(/[^a-zA-Z0-9._-]+/g, '_');
   const suffix = currentRange ? '_range' : '';
@@ -685,9 +836,9 @@ async function exportXlsx() {
 }
 
 async function exportBundle() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
-  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const scoped = scopeRecordsToRange(recordsForExport(spec), currentRange);
   const xlsxBlob = buildXlsx({ records: scoped, spec, config: currentConfig });
   await downloadBundleZip({
     records: scoped, spec, xlsxBlob,
@@ -696,9 +847,9 @@ async function exportBundle() {
 }
 
 async function exportPdf() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
-  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const scoped = scopeRecordsToRange(recordsForExport(spec), currentRange);
   const scopedEvents = currentRange
     ? currentEvents.filter((e) =>
         !(e.tEndMs < currentRange.startMs || e.tStartMs > currentRange.endMs))
@@ -715,7 +866,7 @@ async function exportPdf() {
 }
 
 async function exportHtmlReport() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
   if (ms.compareMode && ms.canCompare()) {
     // Compare-mode HTML uses the per-session summary + cross-session findings.
@@ -727,7 +878,7 @@ async function exportHtmlReport() {
     });
     return;
   }
-  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const scoped = scopeRecordsToRange(recordsForExport(spec), currentRange);
   // When scoping, also scope events/findings to overlap the range.
   const scopedEvents = currentRange
     ? currentEvents.filter((e) =>
@@ -998,7 +1149,7 @@ function selectedSnapshotIds() {
 }
 
 async function renderAll() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
   const quantities = selectedQuantities();
   if (quantities.length === 0) {
@@ -1027,7 +1178,7 @@ async function renderAll() {
         : {}),
     };
     for (const q of quantities) {
-      renderChart(els.fullCharts, currentRecords, spec, q, FULL_QUANTITIES, fullOpts);
+      renderChart(els.fullCharts, dataSource(), spec, q, FULL_QUANTITIES, fullOpts);
     }
   }
 
@@ -1040,7 +1191,7 @@ async function renderAll() {
       `Event #${ev.id}`, `${ev.kind} @ ${formatDate(ev.tStartMs)}`,
     ));
     for (const q of zoomQuantities) {
-      renderChart(els.eventCharts, currentRecords, spec, q, ZOOM_QUANTITIES, {
+      renderChart(els.eventCharts, dataSource(), spec, q, ZOOM_QUANTITIES, {
         startMs: ev.tStartMs - preMs,
         endMs: ev.tEndMs + postMs,
       });
@@ -1056,7 +1207,7 @@ async function renderAll() {
       `Snapshot #${s.id}`, `@ ${formatDate(s.tStartMs)}`,
     ));
     for (const q of zoomQuantities) {
-      renderChart(els.snapshotCharts, currentRecords, spec, q, ZOOM_QUANTITIES, {
+      renderChart(els.snapshotCharts, dataSource(), spec, q, ZOOM_QUANTITIES, {
         startMs: s.tStartMs,
         endMs: s.tEndMs,
       });
@@ -1077,25 +1228,24 @@ function renderOverlayChart(parentEl, spec, quantityKey, _allQuantities) {
   // chart readable; FULL_QUANTITIES often has 3 phases — we'd otherwise
   // overlay 9+ lines for 3 sessions × 3 phases).
   const firstCol = def.series[0];
-  const fi = new Map(spec.fields.map((f) => [f.name, f.index]));
-  const idx = fi.get(firstCol.name);
+  const accessors = all.map((s) => sessionAccessor(s, spec, firstCol.name));
 
-  const xs = [];   // pooled relative-seconds axis
   const ySeries = all.map(() => []);
   // Build a unified sorted x axis from the union of all sessions' rel-seconds.
   const xSet = new Set();
-  const relValues = all.map((s) =>
-    s.records.map((r) => Math.round((r.startMs - s.records[0]?.startMs ?? 0) / 1000))
-  );
-  for (const arr of relValues) for (const x of arr) xSet.add(x);
+  for (const acc of accessors) {
+    for (let i = 0; i < acc.n; i++) {
+      xSet.add(Math.round((acc.startMs(i) - acc.base) / 1000));
+    }
+  }
   const xsAll = [...xSet].sort((a, b) => a - b);
   // Per-session lookup: relSec → value
   for (let si = 0; si < all.length; si++) {
-    const s = all[si];
+    const acc = accessors[si];
     const map = new Map();
-    for (let i = 0; i < s.records.length; i++) {
-      const rel = Math.round((s.records[i].startMs - (s.records[0]?.startMs ?? 0)) / 1000);
-      map.set(rel, s.records[i].floats[idx] * firstCol.scale);
+    for (let i = 0; i < acc.n; i++) {
+      const rel = Math.round((acc.startMs(i) - acc.base) / 1000);
+      map.set(rel, acc.value(i) * firstCol.scale);
     }
     for (const x of xsAll) ySeries[si].push(map.has(x) ? map.get(x) : null);
   }
@@ -1230,9 +1380,9 @@ els.tariffApplyBtn.addEventListener('click', async () => {
   const amps = Number(els.breakerRating.value) || 0;
   saveBreakerRating(amps);
   // Re-run insights with the new breaker context.
-  if (currentRecords) {
+  if (dataSource()) {
     const spec = await getSpec();
-    currentFindings = analyzeInsights(currentRecords, currentEvents, spec,
+    currentFindings = analyzeInsights(dataSource(), currentEvents, spec,
                                       currentSnapshots, currentConfig,
                                       { breakerRatingA: amps });
     renderInsights();
@@ -1315,7 +1465,7 @@ document.addEventListener('keydown', (e) => {
   switch (e.key) {
     case 'r':
     case 'R':
-      if (currentRecords) { e.preventDefault(); renderAll().catch(showError); }
+      if (dataSource()) { e.preventDefault(); renderAll().catch(showError); }
       break;
     case 'z':
     case 'Z': {
