@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { test } from 'node:test';
 
-import { detectEvents } from '../events.js';
+import { detectEvents, rulesFromObject, DEFAULT_RULES } from '../events.js';
 import { pickSnapshots } from '../snapshots.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -158,6 +158,54 @@ test('events: sequential ids in time order', () => {
 
 test('snapshots: empty input returns empty', () => {
   assert.deepEqual(pickSnapshots([], [], spec), []);
+});
+
+// --- Per-asset rules-file (Feature I) — parity with python rules_file --------
+
+test('rulesFromObject: flat defaults override base', () => {
+  const r = rulesFromObject({ dip_pct_of_nominal: 0.92 });
+  assert.equal(r.dip_pct_of_nominal, 0.92);
+  assert.equal(r.outage_v_threshold, DEFAULT_RULES.outage_v_threshold);
+});
+
+test('rulesFromObject: defaults + per-asset, asset wins', () => {
+  const raw = {
+    defaults: { dip_pct_of_nominal: 0.92 },
+    assets: { 'MAC03': { outage_v_threshold: 60.0, swell_pct_of_nominal: 1.08 } },
+  };
+  const r = rulesFromObject(raw, 'MAC03');
+  assert.equal(r.dip_pct_of_nominal, 0.92);
+  assert.equal(r.outage_v_threshold, 60.0);
+  assert.equal(r.swell_pct_of_nominal, 1.08);
+  const other = rulesFromObject(raw, 'OTHER');
+  assert.equal(other.outage_v_threshold, DEFAULT_RULES.outage_v_threshold);
+});
+
+test('rulesFromObject: assets.default fallback', () => {
+  const r = rulesFromObject({ assets: { default: { freq_excursion_hz: 0.3 } } }, 'x');
+  assert.equal(r.freq_excursion_hz, 0.3);
+});
+
+test('rulesFromObject: int keys truncated', () => {
+  const r = rulesFromObject({ min_duration_secs: 3, gap_tolerance_secs: 2 });
+  assert.equal(r.min_duration_secs, 3);
+  assert.equal(r.gap_tolerance_secs, 2);
+});
+
+test('rulesFromObject: unknown key throws', () => {
+  assert.throws(() => rulesFromObject({ not_a_rule: 5 }), /unknown EventRules key/);
+});
+
+test('rulesFromObject: applied rules change detection (dip threshold)', () => {
+  // 260 V on phase a min = 93.9% of 277 — a dip only at a 95% threshold.
+  const overrides = {};
+  plantWindow(overrides, 50, 59, { V_LN_a_min_V: 260.0 });
+  const recs = makeRecords(120, overrides);
+  const base = detectEvents(recs, spec, { nominalLnV: 277.0 });
+  assert.ok(!base.some((e) => e.kind === 'dip'));
+  const rules = rulesFromObject({ defaults: { dip_pct_of_nominal: 0.95 } });
+  const withRules = detectEvents(recs, spec, { nominalLnV: 277.0, rules });
+  assert.ok(withRules.some((e) => e.kind === 'dip'));
 });
 
 test('snapshots: picks calmest non-event window', () => {

@@ -18,6 +18,49 @@ export const DEFAULT_RULES = Object.freeze({
 
 const PHASES = ['a', 'b', 'c'];
 
+// Valid EventRules keys for --rules-file overrides (Feature I). Mirrors the
+// Python EventRules dataclass fields.
+const RULE_KEYS = new Set(Object.keys(DEFAULT_RULES));
+
+/**
+ * Resolve per-asset EventRules from a parsed rules-file object (JSON form),
+ * mirroring python rules_file.load_rules. Precedence: DEFAULT_RULES ->
+ * file.defaults -> file.assets[assetName] (or file.assets.default). A flat
+ * object with only rule keys is treated as defaults.
+ *
+ * @param {object} raw parsed rules object
+ * @param {string|null} assetName
+ * @returns {object} a rules object suitable for detectEvents({rules})
+ */
+export function rulesFromObject(raw, assetName = null) {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_RULES };
+  let defaults;
+  let assets;
+  if ('defaults' in raw || 'assets' in raw) {
+    defaults = raw.defaults || {};
+    assets = raw.assets || {};
+  } else {
+    defaults = raw;
+    assets = {};
+  }
+  const coerce = (over, where) => {
+    const out = {};
+    for (const [k, v] of Object.entries(over)) {
+      if (!RULE_KEYS.has(k)) {
+        throw new Error(`${where}: unknown EventRules key ${k}`);
+      }
+      out[k] = (k === 'min_duration_secs' || k === 'gap_tolerance_secs')
+        ? Math.trunc(Number(v)) : Number(v);
+    }
+    return out;
+  };
+  const merged = { ...DEFAULT_RULES, ...coerce(defaults, 'defaults') };
+  let assetOver = {};
+  if (assetName && assets[assetName]) assetOver = assets[assetName];
+  else if (assets.default) assetOver = assets.default;
+  return { ...merged, ...coerce(assetOver, 'assets') };
+}
+
 function fieldIndex(spec, name) {
   const f = spec.fields.find((f) => f.name === name);
   if (!f) throw new Error(`spec is missing field ${name}`);

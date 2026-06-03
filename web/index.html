@@ -75,6 +75,12 @@
           <input type="text" id="tz-input" placeholder="UTC" autocomplete="off" spellcheck="false">
           <span id="tz-range"></span>
         </p>
+        <p class="rules-control">
+          <label for="rules-file-input"><small>Per-asset threshold rules (JSON, see docs/RULES_FILE.md):</small></label>
+          <input type="file" id="rules-file-input" accept=".json,application/json">
+          <button type="button" id="rules-clear" class="secondary outline" hidden>Clear rules</button>
+          <span id="rules-status"></span>
+        </p>
 
         <fieldset>
           <legend><strong>Reverse CTs</strong> <small>— flip sign of P / Q / PF / DPF / Wh / VARh on selected phases (totals follow)</small></legend>

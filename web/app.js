@@ -1,7 +1,7 @@
 // Main orchestration: drop-zone handling, spec/file loading, worker dispatch,
 // summary rendering, event detection, chart UI, exports. Pure ESM, no framework.
 
-import { detectEvents } from './events.js';
+import { detectEvents, rulesFromObject } from './events.js';
 import { pickSnapshots } from './snapshots.js';
 import { FULL_QUANTITIES, ZOOM_QUANTITIES, renderChart } from './plots.js';
 import { buildXlsx, downloadBlob } from './xlsx_export.js';
@@ -355,7 +355,7 @@ async function onParseDone(msg) {
   await new Promise((r) => setTimeout(r, 0));  // let progress repaint
   try {
     const spec = await getSpec();
-    currentEvents = detectEvents(currentRecords, spec);
+    currentEvents = detectEvents(currentRecords, spec, resolveRules() ? { rules: resolveRules() } : {});
     currentSnapshots = pickSnapshots(currentRecords, currentEvents, spec, { n: 3 });
     currentFindings = analyzeInsights(currentRecords, currentEvents, spec,
                                       currentSnapshots, currentConfig,
@@ -422,7 +422,7 @@ async function onParseDoneColumnar(store) {
   await new Promise((r) => setTimeout(r, 0));
   try {
     const spec = await getSpec();
-    currentEvents = detectEvents(currentStore, spec);
+    currentEvents = detectEvents(currentStore, spec, resolveRules() ? { rules: resolveRules() } : {});
     currentSnapshots = pickSnapshots(currentStore, currentEvents, spec, { n: 3 });
     currentFindings = analyzeInsights(currentStore, currentEvents, spec,
                                       currentSnapshots, currentConfig,
@@ -469,6 +469,37 @@ function dataSource() {
   return currentStore || currentRecords;
 }
 
+// Per-asset EventRules from a loaded rules-file (Feature I), or undefined for
+// the built-in defaults.
+function resolveRules() {
+  if (!currentRulesRaw) return undefined;
+  try {
+    return rulesFromObject(currentRulesRaw, currentConfig?.asset_name ?? null);
+  } catch (e) {
+    showError(e);
+    return undefined;
+  }
+}
+
+// Re-run detection with the current rules and refresh the dependent UI. Used
+// after loading/clearing a rules-file.
+async function redetect() {
+  const src = dataSource();
+  if (!src) return;
+  const spec = await getSpec();
+  const rules = resolveRules();
+  currentEvents = detectEvents(src, spec, rules ? { rules } : {});
+  currentSnapshots = pickSnapshots(src, currentEvents, spec, { n: 3 });
+  currentFindings = analyzeInsights(src, currentEvents, spec, currentSnapshots,
+                                    currentConfig, { breakerRatingA: loadBreakerRating() });
+  renderInsights();
+  renderEventsTable();
+  renderSnapshotsList();
+  renderStatsPanel(spec);
+  renderNarrative(spec);
+  els.insightsSec.hidden = currentFindings.length === 0;
+}
+
 // Per-session column accessor for compare-overlay charts: reads from a
 // session's ColumnStore when present, else its records array. Only the few
 // channels FULL_QUANTITIES references (all retained) are needed here.
@@ -511,6 +542,7 @@ let currentNarrative = null;   // executive-summary narrative (Feature E)
 let currentPq = null;          // IEEE 519 + SARFI power-quality (Feature F)
 let currentDemand = null;      // rolling peak-demand analysis (Feature G)
 let currentTz = null;          // report timezone (IANA) or null = UTC (Feature H)
+let currentRulesRaw = null;    // parsed --rules-file object (Feature I)
 
 const TZ_STORAGE_KEY = 'fluke3540.tz';
 
@@ -1593,6 +1625,36 @@ document.getElementById('ct-reversal-apply')?.addEventListener('click', () => {
   if (currentFile) parseStreaming(currentFile).catch(showError);
   else if (currentArrayBuffer) parseBuffer();
 });
+// Per-asset rules-file (Feature I): load JSON, apply, re-detect.
+document.getElementById('rules-file-input')?.addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  const status = document.getElementById('rules-status');
+  const clearBtn = document.getElementById('rules-clear');
+  if (!file) return;
+  try {
+    const text = await file.text();
+    currentRulesRaw = JSON.parse(text);
+    rulesFromObject(currentRulesRaw, currentConfig?.asset_name ?? null);  // validate
+    if (status) status.textContent = ` Loaded ${file.name}; re-detecting…`;
+    if (clearBtn) clearBtn.hidden = false;
+    await redetect();
+    if (status) status.textContent = ` Applied ${file.name} (asset ${currentConfig?.asset_name ?? 'n/a'}).`;
+  } catch (err) {
+    currentRulesRaw = null;
+    if (status) status.textContent = ` Rules error: ${err.message}`;
+  }
+});
+document.getElementById('rules-clear')?.addEventListener('click', async () => {
+  currentRulesRaw = null;
+  const status = document.getElementById('rules-status');
+  const input = document.getElementById('rules-file-input');
+  const clearBtn = document.getElementById('rules-clear');
+  if (input) input.value = '';
+  if (clearBtn) clearBtn.hidden = true;
+  if (status) status.textContent = ' Rules cleared; using defaults.';
+  await redetect();
+});
+
 els.resetBtn.addEventListener('click', resetUi);
 els.eventsExportNotes?.addEventListener('click', () => {
   const json = exportNotesJson(currentFileHash, currentEvents);

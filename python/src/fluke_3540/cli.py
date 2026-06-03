@@ -200,6 +200,11 @@ def build_argparser() -> argparse.ArgumentParser:
                     help="Chart image format (default png)")
     ap.add_argument("--nominal-ln-v", type=float, default=None, metavar="V",
                     help="Nominal L-N voltage (auto-inferred if omitted)")
+    ap.add_argument("--rules-file", dest="rules_file", type=Path, default=None,
+                    metavar="FILE",
+                    help="JSON/TOML file overriding EventRules thresholds, keyed "
+                         "by asset_id/name (see docs/RULES_FILE.md). Per-asset "
+                         "values win over the file's defaults.")
 
     return ap
 
@@ -367,7 +372,10 @@ def _detect_and_save(args: argparse.Namespace, outdir: Path,
         before = store.n
         store = _window_filter_store(store, args.from_time, args.to_time)
         print(f"         window filter: {before:,} → {store.n:,} records")
-    events = detect_events(store, nominal_ln_v=args.nominal_ln_v)
+
+    # Per-asset threshold overrides (Feature I).
+    rules = _load_event_rules(args, config)
+    events = detect_events(store, nominal_ln_v=args.nominal_ln_v, rules=rules)
     snaps = pick_snapshots(store, events, n=args.snapshots)
     findings = analyze_insights(store, events, snaps, config or {})
     print(f"         {len(events)} events, {len(snaps)} snapshots, "
@@ -387,6 +395,28 @@ def _detect_and_save(args: argparse.Namespace, outdir: Path,
     ), encoding="utf-8")
     print(f"         wrote {events_path.name}, {snaps_path.name}, {insights_path.name}")
     return events, snaps, findings, store
+
+
+def _load_event_rules(args: argparse.Namespace, config: dict | None):
+    """Return EventRules, applying --rules-file overrides for this asset."""
+    from .events import DEFAULT_RULES
+    rules_path = getattr(args, "rules_file", None)
+    if not rules_path:
+        return DEFAULT_RULES
+    from .rules_file import describe_overrides, load_rules
+    asset = (config or {}).get("asset_name")
+    try:
+        rules = load_rules(rules_path, asset_name=asset)
+    except (OSError, ValueError) as e:
+        print(f"ERROR: --rules-file {rules_path}: {e}", file=sys.stderr)
+        raise SystemExit(2)
+    diffs = describe_overrides(rules_path, asset)
+    if diffs:
+        print(f"[rules] {rules_path} (asset={asset or 'n/a'}): "
+              + "; ".join(diffs))
+    else:
+        print(f"[rules] {rules_path}: no overrides applied")
+    return rules
 
 
 def _infer_nominal_ln_v(store: ColumnStore, fallback: float | None) -> float:
