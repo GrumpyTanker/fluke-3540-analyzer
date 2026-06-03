@@ -232,7 +232,17 @@ function pqHtml(pq) {
     `50=${s['SARFI-50']}, 10=${s['SARFI-10']} (${s.events_considered} voltage events).</p>`;
 }
 
-export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [], wholeStats = null, narrative = null, pq = null }) {
+// Peak-demand block (Feature G).
+function demandHtml(demand) {
+  if (!demand || !demand.n_windows) return '';
+  const wmin = Math.round(demand.window_secs / 60);
+  return `<h2>Demand</h2><p>Peak ${wmin}-min demand: ` +
+    `<strong>${demand.peak_demand_kw.toFixed(1)} kW</strong> ` +
+    `(window ending ${esc((demand.peak_window_end || '').slice(0, 19))}Z); ` +
+    `mean demand ${(demand.mean_demand_w / 1000).toFixed(1)} kW.</p>`;
+}
+
+export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [], wholeStats = null, narrative = null, pq = null, demand = null }) {
   const energy = summarizeRecords(records, spec);
   const stats = {
     'Records (per-second)': records.length.toLocaleString(),
@@ -254,6 +264,7 @@ export function buildReportHtml({ title, config, records, spec, events, snapshot
     summaryDlHtml(stats, config),
     wholeStatsTableHtml(wholeStats),
     pqHtml(pq),
+    demandHtml(demand),
     insightsHtml(findings),
     '<h2>Events</h2>',
     eventsTableHtml(events),

@@ -176,6 +176,10 @@ def build_argparser() -> argparse.ArgumentParser:
                          "24 h; pass a window like 08:00-17:00.")
     ap.add_argument("--tod-bin", dest="tod_bin", type=int, default=1, metavar="MINS",
                     help="Time-of-day bin width in minutes (default 1).")
+    ap.add_argument("--demand-window", dest="demand_window", type=int,
+                    default=900, metavar="SECS",
+                    help="Rolling demand window in seconds (default 900 = 15 min). "
+                         "Reports peak demand + the window it occurred in.")
 
     # Output knobs
     ap.add_argument("--no-xlsx", action="store_true", help="Skip XLSX report")
@@ -596,6 +600,17 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
           f"{'COMPLIANT' if pq['ieee519']['all_voltage_compliant'] else 'NON-COMPLIANT'}; "
           f"SARFI-90={pq['sarfi']['SARFI-90']}")
 
+    # Demand analysis (Feature G).
+    from .analysis import demand_analysis
+    demand_window = max(1, getattr(args, "demand_window", 900))
+    # Emit a series sampled at ~1/60 of the window so the JSON stays compact.
+    demand = demand_analysis(store, window_secs=demand_window,
+                             series_step_secs=max(1, demand_window // 1))
+    (outdir / "demand.json").write_text(json.dumps(demand, indent=2), encoding="utf-8")
+    if demand["n_windows"]:
+        print(f"[demand] peak {demand['peak_demand_kw']:.1f} kW over a "
+              f"{demand_window}s window ending {demand['peak_window_end']}")
+
     stats: dict = {}
     if not getattr(args, "no_stats", False):
         stats = _write_stats(outdir, store)
@@ -615,7 +630,7 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     # Auto-narrative / executive summary (Feature E) — needs stats + ct.
     narrative = _write_narrative(outdir, store, events, findings, stats, ct, config)
 
-    return stats, tod_rows, narrative
+    return stats, tod_rows, narrative, demand
 
 
 def _write_narrative(outdir: Path, store: ColumnStore, events, findings,
@@ -697,7 +712,7 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
                   min_csv: Path, events: Sequence[Event],
                   snaps: Sequence[Snapshot], config: dict,
                   stats: dict | None = None, tod_rows=None,
-                  narrative: str | None = None) -> None:
+                  narrative: str | None = None, demand: dict | None = None) -> None:
     full_qtys = _parse_quantities(args.plot, DEFAULT_PLOTS, FULL_QUANTITIES.keys())
     # Subset of zoom quantities that overlap with the user's --plot selection.
     zoom_qtys = [q for q in DEFAULT_ZOOM_PLOTS if q in full_qtys] or DEFAULT_ZOOM_PLOTS
@@ -743,7 +758,8 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
         xlsx_path = outdir / "report.xlsx"
         print(f"[render] xlsx workbook → {xlsx_path}")
         write_xlsx(min_csv, xlsx_path, config=config, csv_per_second_path=full_csv,
-                   stats=stats, tod_rows=tod_rows, narrative=narrative)
+                   stats=stats, tod_rows=tod_rows, narrative=narrative,
+                   demand=demand)
 
     html_path = outdir / "report.html"
     if not args.no_html:
@@ -909,7 +925,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # Post-detection analysis features (markers, stats, tod, split) run on
         # the in-memory store + on-disk CSVs.
-        stats, tod_rows, narrative = _run_extra_analyses(
+        stats, tod_rows, narrative, demand = _run_extra_analyses(
             args, outdir, store, events, findings, config, full_csv, min_csv)
         # Re-write summary.txt with the executive narrative at the top.
         _write_summary_txt(outdir, events, snaps, findings, config,
@@ -932,7 +948,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.plot = ",".join(picked_qtys)
 
         _render_phase(args, outdir, full_csv, min_csv, events, snaps, config,
-                      stats=stats, tod_rows=tod_rows, narrative=narrative)
+                      stats=stats, tod_rows=tod_rows, narrative=narrative,
+                      demand=demand)
         print(f"[done] {outdir}")
         return 0
 

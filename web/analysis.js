@@ -316,6 +316,58 @@ export function sarfiIndices(events, nominalLnV) {
   return counts;
 }
 
+// --- Demand analysis (Feature G) -------------------------------------------
+
+export function demandAnalysis(source, spec, opts = {}) {
+  const windowSecs = Math.max(1, Math.floor(opts.windowSecs ?? 900));
+  const seriesStepSecs = Math.max(0, Math.floor(opts.seriesStepSecs ?? 0));
+  const src = asColumnSource(source, spec);
+  const p = src.column('P_total_avg_W');
+  const n = src.length;
+  const out = {
+    window_secs: windowSecs,
+    peak_demand_w: 0.0,
+    peak_demand_kw: 0.0,
+    peak_window_end: null,
+    peak_window_start: null,
+    mean_demand_w: 0.0,
+    n_windows: 0,
+    series: [],
+  };
+  if (n === 0) return out;
+  const finite = (v) => (Number.isFinite(v) ? v : 0.0);
+  let running = 0.0;
+  let peak = -Infinity;
+  let peakI = -1;
+  let demandSum = 0.0;
+  let demandCount = 0;
+  const series = [];
+  const w = windowSecs;
+  for (let i = 0; i < n; i++) {
+    running += finite(p[i]);
+    if (i >= w) running -= finite(p[i - w]);
+    if (i >= w - 1) {
+      const demand = running / w;
+      demandSum += demand;
+      demandCount += 1;
+      if (demand > peak) { peak = demand; peakI = i; }
+      if (seriesStepSecs && ((i - (w - 1)) % seriesStepSecs === 0)) {
+        series.push({ t: new Date(src.endMs(i)).toISOString(), demand_w: demand });
+      }
+    }
+  }
+  if (peakI >= 0) {
+    out.peak_demand_w = peak;
+    out.peak_demand_kw = peak / 1000.0;
+    out.peak_window_end = new Date(src.endMs(peakI)).toISOString();
+    out.peak_window_start = new Date(src.startMs(peakI - w + 1)).toISOString();
+    out.mean_demand_w = demandCount ? demandSum / demandCount : 0.0;
+    out.n_windows = demandCount;
+  }
+  out.series = series;
+  return out;
+}
+
 // --- Time-bucket partitioning (--split-by) ---------------------------------
 
 export function parsePeriod(text) {

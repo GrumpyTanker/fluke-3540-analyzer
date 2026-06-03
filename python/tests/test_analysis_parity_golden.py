@@ -16,8 +16,8 @@ import json
 from pathlib import Path
 
 from fluke_3540.analysis import (
-    classify_itic, detect_ct_reversal, event_itic, ieee519_compliance,
-    sarfi_indices, time_of_day_profile, whole_session_stats,
+    classify_itic, demand_analysis, detect_ct_reversal, event_itic,
+    ieee519_compliance, sarfi_indices, time_of_day_profile, whole_session_stats,
 )
 from fluke_3540.events import Event
 from fluke_3540.insights import Finding
@@ -116,6 +116,11 @@ def test_emit_analysis_golden():
     ieee519 = ieee519_compliance(store)
     sarfi = sarfi_indices(sample_events, 277.0)
 
+    # Demand on a deterministic ramp store (P = i*100 W over 600 s), 120 s window.
+    ramp_over = {i: {"P_total_avg_W": float(i) * 100.0} for i in range(600)}
+    ramp_store = ColumnStore.from_records(make_records(600, overrides=ramp_over))
+    demand = demand_analysis(ramp_store, window_secs=120, series_step_secs=120)
+
     golden = {
         "stats": stats,
         "tod_rows": tod,
@@ -126,6 +131,7 @@ def test_emit_analysis_golden():
         "narrative": narrative,
         "ieee519": ieee519,
         "sarfi": sarfi,
+        "demand": demand,
     }
     GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     GOLDEN_PATH.write_text(json.dumps(golden, indent=2), encoding="utf-8")

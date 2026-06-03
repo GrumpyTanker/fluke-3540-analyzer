@@ -13,7 +13,8 @@ import {
   detectCtReversal, ctReversalNotice,
 } from '../analysis.js';
 import { buildNarrative, narrativeMarkdown } from '../narrative.js';
-import { ieee519Compliance, sarfiIndices } from '../analysis.js';
+import { ieee519Compliance, sarfiIndices, demandAnalysis } from '../analysis.js';
+import { ColumnStore } from '../column_store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..');
@@ -206,6 +207,38 @@ test('sarfiIndices: matches Python golden', () => {
   const g = golden.sarfi;
   for (const k of ['SARFI-90', 'SARFI-80', 'SARFI-70', 'SARFI-50', 'SARFI-10', 'events_considered']) {
     assert.equal(res[k], g[k], k);
+  }
+});
+
+test('demandAnalysis: matches Python golden (ramp, 120s window)', () => {
+  // Recreate the ramp store: P = i*100 W over 600 records.
+  const records = [];
+  for (let n = 0; n < 600; n++) {
+    const floats = new Float32Array(spec.data_floats);
+    for (const ph of ['a', 'b', 'c']) {
+      for (const st of ['min', 'max', 'avg']) {
+        floats[FI.get(`V_LN_${ph}_${st}_V`)] = 277.0;
+        floats[FI.get(`I_${ph}_${st}_A`)] = 100.0;
+      }
+    }
+    floats[FI.get('freq_avg_Hz')] = 60.0;
+    floats[FI.get('P_total_avg_W')] = n * 100.0;
+    records.push({ index: n, startMs: baseMs + n * 1000, endMs: baseMs + (n + 1) * 1000, floats });
+  }
+  const store = ColumnStore.fromRecords(records, spec);
+  const res = demandAnalysis(store, spec, { windowSecs: 120, seriesStepSecs: 120 });
+  const g = golden.demand;
+  assert.equal(res.window_secs, g.window_secs);
+  assert.equal(res.n_windows, g.n_windows);
+  approx(res.peak_demand_w, g.peak_demand_w, 1e-3, 'peak_demand_w');
+  approx(res.peak_demand_kw, g.peak_demand_kw, 1e-6, 'peak_demand_kw');
+  // Timestamps are the same instant; compare as epoch ms (JS emits Z, Python +00:00).
+  assert.equal(Date.parse(res.peak_window_end), Date.parse(g.peak_window_end));
+  assert.equal(Date.parse(res.peak_window_start), Date.parse(g.peak_window_start));
+  assert.equal(res.series.length, g.series.length);
+  for (let i = 0; i < res.series.length; i++) {
+    assert.equal(Date.parse(res.series[i].t), Date.parse(g.series[i].t), `series[${i}].t`);
+    approx(res.series[i].demand_w, g.series[i].demand_w, 1e-3, `series[${i}].demand_w`);
   }
 });
 

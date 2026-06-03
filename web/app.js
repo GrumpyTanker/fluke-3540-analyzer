@@ -13,7 +13,7 @@ import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
 import { ColumnStore } from './column_store.js';
-import { wholeSessionStats, timeOfDayProfile, detectCtReversal, ctReversalNotice, ieee519Compliance, sarfiIndices } from './analysis.js';
+import { wholeSessionStats, timeOfDayProfile, detectCtReversal, ctReversalNotice, ieee519Compliance, sarfiIndices, demandAnalysis } from './analysis.js';
 import { buildNarrative } from './narrative.js';
 import {
   computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
@@ -508,6 +508,7 @@ let currentStats = null;       // last computed whole_session_stats (for exports
 let currentTodRows = null;     // last computed time-of-day profile (for exports)
 let currentNarrative = null;   // executive-summary narrative (Feature E)
 let currentPq = null;          // IEEE 519 + SARFI power-quality (Feature F)
+let currentDemand = null;      // rolling peak-demand analysis (Feature G)
 
 // Median non-outage L-N voltage for SARFI residual %, from the stats sketch
 // (falls back to 277 V if voltage stats are unavailable).
@@ -629,7 +630,25 @@ function renderStatsPanel(spec) {
     pqP.appendChild(pqs);
   } catch (_) { /* THD columns may be absent on some inputs */ }
 
-  wrap.replaceChildren(table, note, pqP);
+  // Rolling peak-demand (Feature G), 15-min window.
+  currentDemand = null;
+  const demP = document.createElement('p');
+  demP.className = 'stats-demand';
+  try {
+    currentDemand = demandAnalysis(src, spec, { windowSecs: 900 });
+    const ds = document.createElement('small');
+    if (currentDemand.n_windows) {
+      ds.textContent =
+        `Peak 15-min demand: ${currentDemand.peak_demand_kw.toFixed(1)} kW ` +
+        `(window ending ${new Date(currentDemand.peak_window_end).toISOString().slice(0, 19)}Z); ` +
+        `mean demand ${(currentDemand.mean_demand_w / 1000).toFixed(1)} kW.`;
+    } else {
+      ds.textContent = 'Peak demand: session shorter than the 15-min window.';
+    }
+    demP.appendChild(ds);
+  } catch (_) { /* ignore */ }
+
+  wrap.replaceChildren(table, note, pqP, demP);
   if (status) status.firstChild
     ? (status.firstChild.textContent = `${Object.keys(currentStats).length - 1} channels over ${(th.total_records || 0).toLocaleString()} records.`)
     : (status.textContent = '');
@@ -1075,6 +1094,7 @@ async function exportHtmlReport() {
     wholeStats: currentRange ? null : currentStats,
     narrative: currentRange ? null : currentNarrative,
     pq: currentRange ? null : currentPq,
+    demand: currentRange ? null : currentDemand,
   });
 }
 

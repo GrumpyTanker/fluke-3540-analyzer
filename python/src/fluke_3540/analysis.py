@@ -408,6 +408,86 @@ def sarfi_indices(events, nominal_ln_v: float) -> dict:
     return counts
 
 
+# --- Demand analysis (rolling peak demand) ----------------------------------
+#
+# Utilities bill demand on a sliding/block window average of real power (15 min
+# is the most common interval). We compute a trailing rolling mean of
+# P_total_avg_W over ``window_secs`` samples (1 sample = 1 s) and report the
+# peak rolling demand and when it occurred, plus an optional decimated series.
+
+def demand_analysis(
+    store: ColumnStore,
+    window_secs: int = 900,
+    series_step_secs: int = 0,
+) -> dict:
+    """Rolling-window peak real-power demand.
+
+    Args:
+        window_secs: rolling window length (default 900 = 15 min).
+        series_step_secs: if > 0, emit a decimated demand series sampled every
+            this many seconds; if 0, no series is returned (just the peak).
+
+    Returns {"window_secs", "peak_demand_w", "peak_demand_kw",
+    "peak_window_end", "peak_window_start", "mean_demand_w", "n_windows",
+    "series": [...]}. ``series`` entries are {"t": iso, "demand_w": float}.
+    Non-finite P samples are treated as 0 for the running sum.
+    """
+    p = store.col("P_total_avg_W")
+    n = store.n
+    w = max(1, int(window_secs))
+    out: dict = {
+        "window_secs": w,
+        "peak_demand_w": 0.0,
+        "peak_demand_kw": 0.0,
+        "peak_window_end": None,
+        "peak_window_start": None,
+        "mean_demand_w": 0.0,
+        "n_windows": 0,
+        "series": [],
+    }
+    if n == 0:
+        return out
+    # Trailing rolling sum.
+    running = 0.0
+    peak = -math.inf
+    peak_i = -1
+    demand_sum = 0.0
+    demand_count = 0
+    series: list[dict] = []
+    step = max(0, int(series_step_secs))
+    for i in range(n):
+        pv = p[i]
+        if pv != pv or pv in (math.inf, -math.inf):
+            pv = 0.0
+        running += pv
+        if i >= w:
+            old = p[i - w]
+            if old != old or old in (math.inf, -math.inf):
+                old = 0.0
+            running -= old
+        if i >= w - 1:  # a full window is available
+            demand = running / w
+            demand_sum += demand
+            demand_count += 1
+            if demand > peak:
+                peak = demand
+                peak_i = i
+            if step and ((i - (w - 1)) % step == 0):
+                series.append({
+                    "t": store.end(i).isoformat(),
+                    "demand_w": demand,
+                })
+    if peak_i >= 0:
+        out["peak_demand_w"] = peak
+        out["peak_demand_kw"] = peak / 1000.0
+        out["peak_window_end"] = store.end(peak_i).isoformat()
+        out["peak_window_start"] = store.start(peak_i - w + 1).isoformat()
+        out["mean_demand_w"] = demand_sum / demand_count if demand_count else 0.0
+        out["n_windows"] = demand_count
+    out["series"] = series
+    return out
+
+
 # --- Time-bucket partitioning (--split-by) ----------------------------------
 
 @dataclass(frozen=True)
