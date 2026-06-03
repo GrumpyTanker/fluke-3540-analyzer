@@ -325,6 +325,12 @@ pre.error {
   margin: 0;
   font-size: 1rem;
 }
+.decimate-notice {
+  font-size: 0.75rem;
+  color: #b06000;
+  font-style: italic;
+  white-space: nowrap;
+}
 .chart-toolbar {
   display: flex;
   gap: 0.4rem;

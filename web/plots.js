@@ -116,6 +116,64 @@ function fieldIndexMap(spec) {
   return m;
 }
 
+// uPlot degrades badly well before a week of per-second points (~590 K/series).
+// When the filtered series exceeds this, we min/max-decimate to ~plot-width
+// buckets for rendering while keeping the full data for CSV/stats.
+export const DECIMATE_THRESHOLD = 12000;
+
+/**
+ * Min/max-decimate a [xs, ...ys] uPlot dataset to ~targetPoints buckets.
+ *
+ * Each bucket emits TWO x-samples (the timestamps of the per-bucket min and max
+ * of the FIRST y-series, in chronological order) so that both the lowest dip
+ * and the highest spike in every bucket survive on every series. This preserves
+ * outage/dip/spike visibility that naive stride-sampling would drop.
+ *
+ * Returns the original dataset unchanged if it already has <= targetPoints
+ * x-samples. Pure function — no DOM, unit-testable under node --test.
+ *
+ * @param {Array<Array<number>>} data - [xs, y0, y1, ...]
+ * @param {number} targetPoints - desired output x-sample count (approx)
+ * @returns {{data: Array<Array<number>>, decimated: boolean, originalPoints: number}}
+ */
+export function decimateSeries(data, targetPoints = 4000) {
+  const xs = data[0];
+  const n = xs.length;
+  const nSeries = data.length - 1;
+  if (n <= targetPoints || targetPoints < 2 || nSeries < 1) {
+    return { data, decimated: false, originalPoints: n };
+  }
+  const buckets = Math.max(1, Math.floor(targetPoints / 2));
+  const bucketSize = n / buckets;
+  const outXs = [];
+  const outYs = Array.from({ length: nSeries }, () => []);
+  const ref = data[1]; // decide min/max ordering by the first series
+
+  for (let b = 0; b < buckets; b++) {
+    const lo = Math.floor(b * bucketSize);
+    const hi = Math.min(n, Math.floor((b + 1) * bucketSize));
+    if (hi <= lo) continue;
+    let minI = lo;
+    let maxI = lo;
+    for (let i = lo + 1; i < hi; i++) {
+      const v = ref[i];
+      if (v < ref[minI]) minI = i;
+      if (v > ref[maxI]) maxI = i;
+    }
+    // Emit in chronological order so the line doesn't zig-zag in time.
+    const [firstI, secondI] = minI <= maxI ? [minI, maxI] : [maxI, minI];
+    for (const i of (firstI === secondI ? [firstI] : [firstI, secondI])) {
+      outXs.push(xs[i]);
+      for (let k = 0; k < nSeries; k++) outYs[k].push(data[k + 1][i]);
+    }
+  }
+  return {
+    data: [outXs, ...outYs],
+    decimated: true,
+    originalPoints: n,
+  };
+}
+
 /**
  * Build uPlot data arrays from a set of records and a quantity definition.
  * Returns [xs, ...ySeries] suitable for uPlot's data prop.
@@ -144,7 +202,11 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
   const uPlot = uplotOrThrow();
   const def = quantityMap[quantityKey];
   if (!def) throw new Error(`unknown quantity: ${quantityKey}`);
-  const data = buildPlotData(records, spec, def, startMs, endMs);
+  const fullData = buildPlotData(records, spec, def, startMs, endMs);
+  // Decimate for rendering only; CSV export keeps fullData.
+  const plotWidthGuess = width || (parentEl && parentEl.clientWidth) || 900;
+  const { data, decimated, originalPoints } = decimateSeries(
+    fullData, Math.max(2000, plotWidthGuess * 3));
 
   // Wrap chart in a card with a toolbar
   const wrapper = document.createElement('article');
@@ -154,6 +216,16 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
   const titleEl = document.createElement('h3');
   titleEl.textContent = def.title;
   header.appendChild(titleEl);
+  if (decimated) {
+    const notice = document.createElement('span');
+    notice.className = 'decimate-notice';
+    notice.textContent =
+      `large session — chart decimated (${originalPoints.toLocaleString()} → ` +
+      `${data[0].length.toLocaleString()} pts; CSV keeps full data)`;
+    notice.title =
+      'Min/max decimation preserves spikes and dips. Downloaded CSV is full resolution.';
+    header.appendChild(notice);
+  }
   const toolbar = document.createElement('div');
   toolbar.className = 'chart-toolbar';
   const dlPng = document.createElement('button');
@@ -219,7 +291,7 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
 
   // Toolbar handlers
   dlPng.addEventListener('click', () => downloadChartPng(plot, def.title));
-  dlCsv.addEventListener('click', () => downloadChartCsv(data, def, def.title));
+  dlCsv.addEventListener('click', () => downloadChartCsv(fullData, def, def.title));
   resetBtn.addEventListener('click', () => {
     plot.batch(() => {
       plot.setScale('x', { min: null, max: null });
@@ -227,7 +299,7 @@ export function renderChart(parentEl, records, spec, quantityKey, quantityMap = 
     });
   });
 
-  return { plot, container: wrapper, data, def };
+  return { plot, container: wrapper, data, fullData, decimated, def };
 }
 
 function attachBandTooltips(plot, chartDiv, eventBands) {

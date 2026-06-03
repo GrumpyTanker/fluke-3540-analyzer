@@ -27,11 +27,11 @@ from dataclasses import asdict, dataclass, field
 from typing import Iterable, Sequence
 
 from .events import Event
-from .parser import FIELDS, Record, SPEC
+from .parser import SPEC
 from .snapshots import Snapshot
+from .store import ColumnStore
 
 
-_FIELD_INDEX = {f.name: f.index for f in FIELDS}
 _RULES: dict = SPEC.get("insight_rules", {})
 
 
@@ -61,17 +61,17 @@ def to_jsonable(f: Finding) -> dict:
 
 # --- Helpers ----------------------------------------------------------------
 
-def _col(records: Sequence[Record], name: str) -> list[float]:
-    idx = _FIELD_INDEX[name]
-    return [r.floats[idx] for r in records]
+def _col(store: ColumnStore, name: str):
+    """Return the store column (array.array). Indexing/slicing behave as a list."""
+    return store.col(name)
 
 
-def _non_outage_mask(records: Sequence[Record]) -> list[bool]:
+def _non_outage_mask(store: ColumnStore) -> list[bool]:
     """All-three-phase avg voltage > outage threshold."""
-    a = _col(records, "V_LN_a_avg_V")
-    b = _col(records, "V_LN_b_avg_V")
-    c = _col(records, "V_LN_c_avg_V")
-    return [a[i] > 50.0 and b[i] > 50.0 and c[i] > 50.0 for i in range(len(records))]
+    a = store.col("V_LN_a_avg_V")
+    b = store.col("V_LN_b_avg_V")
+    c = store.col("V_LN_c_avg_V")
+    return [a[i] > 50.0 and b[i] > 50.0 and c[i] > 50.0 for i in range(store.n)]
 
 
 def _mean(values: Iterable[float]) -> float:
@@ -167,15 +167,15 @@ def _rule_outage_signatures(events: Sequence[Event]) -> list[Finding]:
     return findings
 
 
-def _rule_phase_asymmetry(records: Sequence[Record]) -> list[Finding]:
+def _rule_phase_asymmetry(store: ColumnStore) -> list[Finding]:
     threshold_pct = _r("phase_asymmetry_pct", 2.0)
-    not_outage = _non_outage_mask(records)
-    a = _col(records, "V_LN_a_avg_V")
-    b = _col(records, "V_LN_b_avg_V")
-    c = _col(records, "V_LN_c_avg_V")
-    a_vals = [a[i] for i in range(len(records)) if not_outage[i]]
-    b_vals = [b[i] for i in range(len(records)) if not_outage[i]]
-    c_vals = [c[i] for i in range(len(records)) if not_outage[i]]
+    not_outage = _non_outage_mask(store)
+    a = _col(store, "V_LN_a_avg_V")
+    b = _col(store, "V_LN_b_avg_V")
+    c = _col(store, "V_LN_c_avg_V")
+    a_vals = [a[i] for i in range(store.n) if not_outage[i]]
+    b_vals = [b[i] for i in range(store.n) if not_outage[i]]
+    c_vals = [c[i] for i in range(store.n) if not_outage[i]]
     if not a_vals:
         return []
     means = {"a": _mean(a_vals), "b": _mean(b_vals), "c": _mean(c_vals)}
@@ -210,23 +210,23 @@ def _rule_phase_asymmetry(records: Sequence[Record]) -> list[Finding]:
     )]
 
 
-def _rule_pf_drift(records: Sequence[Record]) -> list[Finding]:
+def _rule_pf_drift(store: ColumnStore) -> list[Finding]:
     threshold = _r("pf_drift_threshold", 0.85)
     min_frac = _r("pf_drift_min_fraction", 0.10)
-    not_outage = _non_outage_mask(records)
-    pf = _col(records, "PF_total_avg")
-    s = _col(records, "S_total_avg_VA")
-    q = _col(records, "Q_total_avg_VAR")
+    not_outage = _non_outage_mask(store)
+    pf = _col(store, "PF_total_avg")
+    s = _col(store, "S_total_avg_VA")
+    q = _col(store, "Q_total_avg_VAR")
     low_pf_mask = [
         not_outage[i] and 0 < abs(pf[i]) < threshold
-        for i in range(len(records))
+        for i in range(store.n)
     ]
     frac = _fraction(low_pf_mask)
     if frac < min_frac:
         return []
     # Mean Q during low-PF periods — a rough PFC kVAR sizing recommendation.
-    q_during = [abs(q[i]) for i in range(len(records)) if low_pf_mask[i]]
-    s_during = [abs(s[i]) for i in range(len(records)) if low_pf_mask[i]]
+    q_during = [abs(q[i]) for i in range(store.n) if low_pf_mask[i]]
+    s_during = [abs(s[i]) for i in range(store.n) if low_pf_mask[i]]
     rec_kvar = int(round(_mean(q_during) / 1000)) if q_during else 0
     avg_s_kva = _mean(s_during) / 1000 if s_during else 0
     headline = (
@@ -254,16 +254,16 @@ def _rule_pf_drift(records: Sequence[Record]) -> list[Finding]:
     )]
 
 
-def _rule_imbalance_sustained(records: Sequence[Record]) -> list[Finding]:
+def _rule_imbalance_sustained(store: ColumnStore) -> list[Finding]:
     pct_threshold = _r("imbalance_sustained_pct", 1.5)
     secs_threshold = int(_r("imbalance_sustained_secs", 60))
-    not_outage = _non_outage_mask(records)
-    a = _col(records, "V_LN_a_avg_V")
-    b = _col(records, "V_LN_b_avg_V")
-    c = _col(records, "V_LN_c_avg_V")
+    not_outage = _non_outage_mask(store)
+    a = _col(store, "V_LN_a_avg_V")
+    b = _col(store, "V_LN_b_avg_V")
+    c = _col(store, "V_LN_c_avg_V")
     # Compute per-sample imbalance
     imbal = []
-    for i in range(len(records)):
+    for i in range(store.n):
         if not not_outage[i]:
             imbal.append(0.0)
             continue
@@ -315,11 +315,11 @@ def _rule_imbalance_sustained(records: Sequence[Record]) -> list[Finding]:
     )]
 
 
-def _rule_freq_stiffness(records: Sequence[Record], events: Sequence[Event]) -> list[Finding]:
+def _rule_freq_stiffness(store: ColumnStore, events: Sequence[Event]) -> list[Finding]:
     threshold_hz = _r("freq_stiffness_hz", 0.05)
     min_count = int(_r("freq_stiffness_min_count", 3))
-    freq = _col(records, "freq_avg_Hz")
-    record_index_by_time = {r.start: i for i, r in enumerate(records)}
+    freq = _col(store, "freq_avg_Hz")
+    record_index_by_time = {t: i for i, t in enumerate(store.iter_times())}
     correlations: list[Event] = []
     for ev in events:
         if ev.kind != "power_step":
@@ -359,12 +359,12 @@ def _rule_freq_stiffness(records: Sequence[Record], events: Sequence[Event]) -> 
     )]
 
 
-def _rule_outage_frequency(records: Sequence[Record], events: Sequence[Event]) -> list[Finding]:
+def _rule_outage_frequency(store: ColumnStore, events: Sequence[Event]) -> list[Finding]:
     per_day_threshold = _r("outage_frequency_per_day", 1.0)
     outages = [e for e in events if e.kind == "outage"]
-    if not outages or not records:
+    if not outages or store.n == 0:
         return []
-    duration_secs = (records[-1].end - records[0].start).total_seconds()
+    duration_secs = (store.last_end - store.first_start).total_seconds()
     if duration_secs <= 0:
         return []
     duration_days = duration_secs / 86400.0
@@ -394,13 +394,13 @@ def _rule_outage_frequency(records: Sequence[Record], events: Sequence[Event]) -
     )]
 
 
-def _rule_current_spike_ratio(records: Sequence[Record]) -> list[Finding]:
+def _rule_current_spike_ratio(store: ColumnStore) -> list[Finding]:
     ratio_threshold = _r("current_to_mean_ratio_alert", 5.0)
     findings: list[Finding] = []
-    not_outage = _non_outage_mask(records)
+    not_outage = _non_outage_mask(store)
     for phase in ("a", "b", "c"):
-        i_max = _col(records, f"I_{phase}_max_A")
-        valid = [i_max[i] for i in range(len(records)) if not_outage[i]]
+        i_max = _col(store, f"I_{phase}_max_A")
+        valid = [i_max[i] for i in range(store.n) if not_outage[i]]
         if not valid:
             continue
         mean = _mean(valid)
@@ -437,20 +437,25 @@ def _rule_current_spike_ratio(records: Sequence[Record]) -> list[Finding]:
 # --- Public API -------------------------------------------------------------
 
 def analyze(
-    records: Sequence[Record],
+    records_or_store: Sequence | ColumnStore,
     events: Sequence[Event],
     snapshots: Sequence[Snapshot] | None = None,
     config: dict | None = None,
 ) -> list[Finding]:
-    """Run every rule against the given session data and return ordered Findings."""
+    """Run every rule against the given session data and return ordered Findings.
+
+    Accepts a :class:`~fluke_3540.store.ColumnStore` or an iterable of Records.
+    """
+    store = (records_or_store if isinstance(records_or_store, ColumnStore)
+             else ColumnStore.from_records(records_or_store))
     raw: list[Finding] = []
     raw.extend(_rule_outage_signatures(events))
-    raw.extend(_rule_phase_asymmetry(records))
-    raw.extend(_rule_pf_drift(records))
-    raw.extend(_rule_imbalance_sustained(records))
-    raw.extend(_rule_freq_stiffness(records, events))
-    raw.extend(_rule_outage_frequency(records, events))
-    raw.extend(_rule_current_spike_ratio(records))
+    raw.extend(_rule_phase_asymmetry(store))
+    raw.extend(_rule_pf_drift(store))
+    raw.extend(_rule_imbalance_sustained(store))
+    raw.extend(_rule_freq_stiffness(store, events))
+    raw.extend(_rule_outage_frequency(store, events))
+    raw.extend(_rule_current_spike_ratio(store))
     # Order: alert > warn > info, then by kind alphabetical for stability.
     sev_rank = {"alert": 0, "warn": 1, "info": 2}
     raw.sort(key=lambda f: (sev_rank.get(f.severity, 99), f.kind))

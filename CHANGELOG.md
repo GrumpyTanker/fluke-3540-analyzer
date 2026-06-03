@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-06-02
+
+Large-session hardening — the tool now survives week-long captures
+(589,877 one-second records / 438 MB) without OOM, and gains a round of
+multi-day analysis features. Driven by a real ~6.8-day capture on the
+P115RE-MAC03 rectifier.
+
+### Added — core hardening
+- **Memory-bounded `ColumnStore`** (`store.py`) — builds in one streaming
+  pass, keeping only the ~20 channels analysis needs as `array.array('f')`
+  columns (~50 MB for a week, vs >1 GB before). `events`, `snapshots`, and
+  `insights` were refactored onto it; they still accept Records for the
+  existing small-fixture tests.
+- **Single-pass parse** — `parser.export_csv_multi` walks `trend.bin` once,
+  writing the full CSV, the 1-min CSV, and the store together (the binary
+  used to be parsed twice).
+- **`--max-csv-rows N` guard** — caps the full CSV for week-long sessions by
+  auto-raising the stride and logging exactly what was downsampled; the 1-min
+  CSV and the analysis store keep full resolution.
+- **O(N) snapshot stdev** — `pick_snapshots` rolling stdev is now prefix-sum
+  based (was O(N×window) ≈ 177 M ops for a week); parity-tested against the
+  old algorithm.
+- **Tolerant parser** — `iter_records_safe` skips/logs bad magic (resync),
+  truncated tails, and flags non-finite floats instead of aborting; periodic
+  progress/ETA on long parses.
+
+### Added — CLI features
+- **Clock-correction anchors** — `--anchor-start` / `--anchor-end` (mutually
+  exclusive) pin a known real start/end to correct a wrong meter RTC; the
+  shift flows to CSV timestamps, the store, events, and `--split-by` buckets.
+- **Time-bucket splitting** — `--split-by hour|day|week|<duration>` emits a
+  full per-bucket report (`<label>/{session.csv,events.json,summary.txt,report.xlsx}`)
+  plus a top-level roll-up and `buckets_summary.csv`. Boundary-spanning events
+  are filed under their start bucket and flagged.
+
+### Added — analysis (`analysis.py`)
+- **Event markers / correlation** — `--mark "ISO=label"` (repeatable) and
+  `--marks FILE.csv`; each marker's nearest event + offset written to
+  `markers.json`. (Crux of the rectifier PLC-stop correlation.)
+- **Per-bucket summary table** — `buckets_summary.csv` (V min/avg/max, I max,
+  kWh, #outages/#dips/#swells, worst PF, peak kW per bucket).
+- **ITIC / CBEMA classification** — every dip/outage/swell classified
+  `no_interruption` / `prohibited` / `no_damage`; added to each event's JSON.
+  See [`docs/ITIC.md`](docs/ITIC.md).
+- **Whole-session statistics** — `stats.json` + `stats.csv` + an XLSX
+  Statistics sheet (per-channel count/min/p1/p5/median/mean/p95/p99/max/stdev
+  via streaming Welford + histogram percentiles, plus under-voltage /
+  over-current time accounting).
+- **Time-of-day (diurnal) profile** — `--tod-profile [HH:MM-HH:MM]` bins
+  samples by time-of-day across all days into an avg/min/max envelope;
+  `time_of_day_profile.csv` + an XLSX Time-of-Day sheet (works without gnuplot).
+
+### Added — web app
+- **Min/max chart decimation** — uPlot series are decimated to ~plot-width
+  buckets (preserving per-bucket min+max so dips/spikes survive) for week-long
+  sessions; a "large session — chart decimated" notice appears and CSV export
+  keeps full resolution. Typed-array record storage + chunked parse for the
+  full 7-day worst case are tracked in ROADMAP.
+
+### Tests
+- 175 Python tests (up from 109 in v0.4.0)
+- 82 JS tests (up from 76 in v0.4.0)
+- **257 total** — all green.
+
 ## [0.4.0] — 2026-05-28
 
 ### Added
@@ -147,6 +211,7 @@ First public release.
 - CI on every PR (pytest + node --test); GitHub Pages auto-deploy.
 - MIT license, credits FLUKELOAD upstream.
 
+[0.5.0]: https://github.com/GrumpyTanker/fluke-3540-analyzer/releases/tag/v0.5.0
 [0.4.0]: https://github.com/GrumpyTanker/fluke-3540-analyzer/releases/tag/v0.4.0
 [0.3.0]: https://github.com/GrumpyTanker/fluke-3540-analyzer/releases/tag/v0.3.0
 [0.2.0]: https://github.com/GrumpyTanker/fluke-3540-analyzer/releases/tag/v0.2.0

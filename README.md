@@ -88,6 +88,15 @@ fluke-analyze path/to/ES.NNN -o output/ \
 | `--snapshots N` | `3` | Number of quiet snapshots to pick |
 | `--reverse-cts [PHASES]` | off | Negate P/Q/PF/DPF/Wh/VARh. Bare flag = all phases; pass `a` or `a,c` for selected phases (totals follow). See `docs/CT_REVERSAL.md` |
 | `--every K` | `1` | Emit every K-th record into the CSV |
+| `--max-csv-rows N` | off | Cap the full CSV at ~N rows for week-long sessions; stride is auto-raised and the downsampling is logged. 1-min CSV + analysis keep full resolution. |
+| `--anchor-start ISO_TIME` | off | Pin the real wall-clock **start** to correct a wrong meter RTC (shifts every timestamp). Mutually exclusive with `--anchor-end`. |
+| `--anchor-end ISO_TIME` | off | Pin the real wall-clock **end** (e.g. a known shutdown time). |
+| `--split-by PERIOD` | off | Partition into time buckets (`hour`\|`day`\|`week` or a duration like `30m`/`6h`/`2d`). Emits a full per-bucket report (`<label>/`) + `buckets_summary.csv` roll-up. |
+| `--mark "ISO=LABEL"` | | Add an event marker (repeatable); cross-referenced to nearest events in `markers.json`. |
+| `--marks FILE.csv` | | Load markers from a CSV (`time,label`). |
+| `--tod-profile [HH:MM-HH:MM]` | off | Time-of-day (diurnal) profile — avg/min/max envelope per bin across all days. Bare flag = 24 h. Writes `time_of_day_profile.csv` + an XLSX sheet. |
+| `--tod-bin MINS` | `1` | Time-of-day bin width in minutes. |
+| `--no-stats` | | Skip whole-session statistics (`stats.json`/`stats.csv` + XLSX sheet). |
 | `--format` | `png` | `png` or `svg` |
 | `--no-xlsx` | | Skip the XLSX workbook |
 | `--no-html` | | Skip the self-contained HTML report (default writes `report.html`) |

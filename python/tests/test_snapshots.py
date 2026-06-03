@@ -1,10 +1,46 @@
 """Tests for snapshot picking."""
 from __future__ import annotations
 
+from statistics import pstdev
+
 from fluke_3540.events import detect_events
-from fluke_3540.snapshots import pick_snapshots
+from fluke_3540.snapshots import _rolling_stdev, pick_snapshots
+from fluke_3540.store import ColumnStore
 
 from conftest import make_records, plant_window
+
+
+def _rolling_stdev_naive(values, window):
+    """The original O(N*window) implementation, kept here as a parity oracle."""
+    out = [None] * len(values)
+    if window <= 1 or window > len(values):
+        return out
+    for i in range(window - 1, len(values)):
+        out[i] = pstdev(values[i - window + 1:i + 1])
+    return out
+
+
+def test_prefix_sum_stdev_matches_naive():
+    # Varied, non-trivial series so float cancellation is exercised.
+    values = [50_000.0 + (i % 13) * 3_000.0 + (i * i % 97) for i in range(1000)]
+    for window in (1, 2, 5, 60, 300, 1001):
+        new = _rolling_stdev(values, window)
+        old = _rolling_stdev_naive(values, window)
+        assert len(new) == len(old)
+        for a, b in zip(new, old):
+            if a is None or b is None:
+                assert a is b is None
+            else:
+                assert abs(a - b) < 1e-3, f"window={window}"
+
+
+def test_pick_snapshots_accepts_store():
+    recs = make_records(600)
+    store = ColumnStore.from_records(recs)
+    snaps = pick_snapshots(store, events=[], n=1, window_secs=300,
+                           min_separation_secs=1)
+    assert len(snaps) == 1
+    assert snaps[0].p_total_mean_w == 50_000.0
 
 
 def test_no_records_returns_empty():

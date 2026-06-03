@@ -4,6 +4,34 @@ Shipped releases live in [CHANGELOG.md](CHANGELOG.md). This file is the
 backlog of ideas we've discussed but not yet committed to a specific
 release.
 
+## Shipped in v0.5 — large-session hardening
+
+The v0.5 release was driven by a real ~6.8-day P115RE-MAC03 capture
+(589,877 records / 438 MB) rather than the themes below. Delivered:
+memory-bounded `ColumnStore`, single-pass parse, `--max-csv-rows` guard,
+O(N) snapshot stdev, tolerant parser, `--anchor-start/--anchor-end` clock
+correction, `--split-by` per-bucket reports + roll-up, event markers
+(`--mark/--marks`), ITIC/CBEMA classification, whole-session statistics,
+time-of-day diurnal profile, and web chart decimation. The themes below
+remain the forward backlog.
+
+### Deferred from the v0.5 web pass
+
+The Python core is fully week-hardened. The browser app got chart
+decimation (the biggest uPlot win) this pass; the remaining 7-day
+robustness work is parked here:
+
+- **Typed-array record storage** — `parser.js` currently allocates one
+  object + one `Float32Array(180)` per record (~425 MB+ for a week).
+  Replace with a single flat `Float32Array` (or per-column arrays mirroring
+  the Python `ColumnStore`) indexed by record, eliminating per-record
+  object overhead.
+- **Chunked / streaming parse with progress** — parse in slices off a
+  `File`/`Blob` stream so a 438 MB session never has to be held as one
+  `ArrayBuffer` plus a parallel object array.
+- **IndexedDB large-session verification** — confirm the cache layer
+  holds a 438 MB session and evicts sanely under quota pressure.
+
 ## v0.5 candidates
 
 Themes brainstormed after v0.4 shipped. Pick a coherent slice for the

@@ -112,10 +112,78 @@ def _build_summary(csv_path: Path) -> dict[str, float | int]:
     )
 
 
+def _add_stats_sheet(wb, stats: Mapping) -> None:
+    """Add a Statistics sheet from a whole_session_stats() dict."""
+    ws = wb.create_sheet("Statistics")
+    ws["A1"] = "Whole-session statistics"
+    ws["A1"].font = Font(size=14, bold=True)
+    headers = ["Channel", "Unit", "Count", "Min", "p1", "p5", "Median",
+               "Mean", "p95", "p99", "Max", "Stdev"]
+    ws.append([])
+    ws.append(headers)
+    for cell in ws[3]:
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+    for name, d in stats.items():
+        if name.startswith("_"):
+            continue
+        ws.append([name, d.get("unit", ""), d["count"],
+                   round(d["min"], 3), round(d["p1"], 3), round(d["p5"], 3),
+                   round(d["median"], 3), round(d["mean"], 3), round(d["p95"], 3),
+                   round(d["p99"], 3), round(d["max"], 3), round(d["stdev"], 3)])
+    th = stats.get("_thresholds")
+    if th:
+        ws.append([])
+        ws.append(["Time under-voltage (< %.0f V)" % th["undervoltage_v"],
+                   "", f"{th['sec_undervoltage']:,} s",
+                   f"{th['pct_undervoltage']:.2f}%"])
+        ws.append(["Time over-current (> %.0f A)" % th["overcurrent_a"],
+                   "", f"{th['sec_overcurrent']:,} s",
+                   f"{th['pct_overcurrent']:.2f}%"])
+    ws.column_dimensions["A"].width = 22
+
+
+def _add_tod_sheet(wb, tod_rows) -> None:
+    """Add a Time-of-Day sheet (diurnal avg/min/max envelope) with a chart."""
+    ws = wb.create_sheet("Time of Day")
+    ws["A1"] = "Time-of-day (diurnal) profile"
+    ws["A1"].font = Font(size=14, bold=True)
+    header = ["Bin", "n", "n_days", "P avg (kW)", "P min (kW)", "P max (kW)",
+              "V avg (V)", "I avg (A)"]
+    ws.append([])
+    ws.append(header)
+    for cell in ws[3]:
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+    first_data = 4
+    for r in tod_rows:
+        ws.append([r["bin"], r["n"], r["n_days"],
+                   round(r["p_avg_kW"], 2), round(r["p_min_kW"], 2),
+                   round(r["p_max_kW"], 2), round(r["v_avg_V"], 1),
+                   round(r["i_avg_A"], 1)])
+    last_data = first_data + len(tod_rows) - 1
+    if tod_rows:
+        from openpyxl.chart import LineChart, Reference
+        chart = LineChart()
+        chart.title = "Power by time of day (avg / min / max)"
+        chart.y_axis.title = "kW"
+        chart.x_axis.title = "Time of day"
+        chart.height = 10
+        chart.width = 28
+        data = Reference(ws, min_col=4, max_col=6, min_row=3, max_row=last_data)
+        cats = Reference(ws, min_col=1, min_row=first_data, max_row=last_data)
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+        ws.add_chart(chart, "J3")
+    ws.column_dimensions["A"].width = 10
+
+
 def write_xlsx(
     csv_path: Path, output_path: Path,
     config: Mapping[str, str | None] | None = None,
     *, csv_per_second_path: Path | None = None,
+    stats: Mapping | None = None,
+    tod_rows=None,
 ) -> Path:
     """Build the chartable XLSX.
 
@@ -123,6 +191,9 @@ def write_xlsx(
     csv_per_second_path (defaulting to csv_path) is read for accurate Summary totals.
     config provides asset/team/instrument metadata for the Summary sheet
     (omitted if config is None or empty).
+    stats (from whole_session_stats) adds a Statistics sheet; tod_rows (from
+    time_of_day_profile) adds a Time-of-Day sheet — both make the report
+    self-contained without gnuplot.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     summary_csv = csv_per_second_path or csv_path
@@ -281,6 +352,11 @@ def write_xlsx(
         ws_sum.cell(row=i, column=2, value=value)
     ws_sum.column_dimensions["A"].width = 28
     ws_sum.column_dimensions["B"].width = 50
+
+    if stats:
+        _add_stats_sheet(wb, stats)
+    if tod_rows:
+        _add_tod_sheet(wb, tod_rows)
 
     wb.save(output_path)
     return output_path

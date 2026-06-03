@@ -63,6 +63,47 @@ def build_synthetic_trend(path: Path, count: int = SYNTHETIC_RECORD_COUNT) -> No
             assert len(header) + len(floats) == RECORD_SIZE
 
 
+def build_large_trend(
+    path: Path,
+    count: int,
+    base: dt.datetime = SYNTHETIC_BASE,
+    inject_bad_magic_at: int | None = None,
+    truncate_tail: bool = False,
+) -> None:
+    """Write a parametrizable trend.bin for large-session / robustness tests.
+
+    Each record's floats are a healthy 277V / 60Hz / 100A / 50kW profile so the
+    synthetic large session looks like a normal capture unless overridden.
+
+    - ``inject_bad_magic_at``: corrupt the magic on this record index.
+    - ``truncate_tail``: append a short (half-record) garbage tail.
+    """
+    healthy = [0.0] * DATA_FLOATS
+    for ph in ("a", "b", "c"):
+        for st in ("min", "max", "avg"):
+            healthy[FIELD_INDEX[f"V_LN_{ph}_{st}_V"]] = 277.0
+            healthy[FIELD_INDEX[f"I_{ph}_{st}_A"]] = 100.0
+    healthy[FIELD_INDEX["freq_avg_Hz"]] = 60.0
+    healthy[FIELD_INDEX["P_total_avg_W"]] = 50_000.0
+    healthy[FIELD_INDEX["S_total_avg_VA"]] = 52_000.0
+    healthy[FIELD_INDEX["PF_total_avg"]] = 0.96
+    with path.open("wb") as fh:
+        for n in range(count):
+            start_ft = dt_to_filetime(base + dt.timedelta(seconds=n))
+            end_ft = dt_to_filetime(base + dt.timedelta(seconds=n + 1))
+            magic = b"\x00\x00\x00\x00" if n == inject_bad_magic_at else RECORD_MAGIC
+            header = (
+                magic
+                + struct.pack("<II", start_ft >> 32 & 0xFFFFFFFF, start_ft & 0xFFFFFFFF)
+                + struct.pack("<II", end_ft >> 32 & 0xFFFFFFFF, end_ft & 0xFFFFFFFF)
+                + struct.pack("<I", 0)
+            )
+            floats = struct.pack(f"<{DATA_FLOATS}f", *healthy)
+            fh.write(header + floats)
+        if truncate_tail:
+            fh.write(b"\xde\xad\xbe\xef" * 10)  # 40-byte garbage tail
+
+
 @pytest.fixture(scope="session")
 def fixtures_dir() -> Path:
     d = Path(__file__).parent / "fixtures"
