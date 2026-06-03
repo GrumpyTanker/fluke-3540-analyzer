@@ -449,19 +449,29 @@ def bucket_summary_row(label: str, sub: ColumnStore,
     imax = 0.0
     peak_kw = -math.inf
     pf_worst = 1.0
+    p_sum = 0.0
+    p_count = 0
     for i in range(nrec):
         for vv in (va[i], vb[i], vc[i]):
-            if vv > 50.0:  # ignore outage zeros for min/avg
+            if math.isfinite(vv) and vv > 50.0:  # ignore outage zeros for min/avg
                 vmin = min(vmin, vv); vsum += vv; vcount += 1
-            vmax = max(vmax, vv)
-        imax = max(imax, ia[i], ib[i], ic[i])
-        peak_kw = max(peak_kw, p[i] / 1000.0)
-        if va[i] > 50.0 and vb[i] > 50.0 and vc[i] > 50.0:
-            if abs(pf[i]) < abs(pf_worst):
+            if math.isfinite(vv):
+                vmax = max(vmax, vv)
+        for cc in (ia[i], ib[i], ic[i]):
+            if math.isfinite(cc):
+                imax = max(imax, cc)
+        pv = p[i]
+        if math.isfinite(pv):
+            peak_kw = max(peak_kw, pv / 1000.0)
+            p_sum += pv
+            p_count += 1
+        if (math.isfinite(va[i]) and va[i] > 50.0 and math.isfinite(vb[i])
+                and vb[i] > 50.0 and math.isfinite(vc[i]) and vc[i] > 50.0):
+            if math.isfinite(pf[i]) and abs(pf[i]) < abs(pf_worst):
                 pf_worst = pf[i]
-    # kWh via mean power * hours (1 record = 1 s)
-    p_mean = sum(p) / nrec if nrec else 0.0
-    kwh = p_mean / 1000.0 * (nrec / 3600.0)
+    # kWh via mean power * hours (1 record = 1 s); non-finite samples skipped.
+    p_mean = p_sum / p_count if p_count else 0.0
+    kwh = p_mean / 1000.0 * (p_count / 3600.0)
 
     n_out = sum(1 for e in bucket_events if e.kind == "outage")
     n_dip = sum(1 for e in bucket_events if e.kind == "dip")

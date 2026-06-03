@@ -59,6 +59,19 @@ def test_event_itic_outage():
     assert info["itic_class"] == "no_damage"
 
 
+def test_bucket_summary_skips_nonfinite_power():
+    # A single NaN in P_total must not poison kWh/peak_kW (real-data regression).
+    overrides = {50: {"P_total_avg_W": float("nan")}}
+    recs = make_records(200, overrides=overrides)
+    store = ColumnStore.from_records(recs)
+    row = bucket_summary_row("b", store, [])
+    import math
+    assert math.isfinite(row["kWh"])
+    assert math.isfinite(row["peak_kW"])
+    # 199 finite records at 50 kW -> ~ (50kW * 199s)/3600 kWh
+    assert row["kWh"] == pytest.approx(50.0 * (199 / 3600.0), rel=1e-3)
+
+
 def test_event_itic_non_voltage_empty():
     ev = Event(0, "power_step",
                dt.datetime(2026, 5, 27, 1, 0, 0, tzinfo=dt.timezone.utc),
