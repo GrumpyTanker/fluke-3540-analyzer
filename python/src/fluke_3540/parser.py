@@ -188,6 +188,80 @@ def iter_records(path: Path) -> Iterator[Record]:
             index += 1
 
 
+@dataclass
+class ParseStats:
+    """Counters from a tolerant parse pass."""
+    total_seen: int = 0          # record slots examined (good + bad)
+    good: int = 0                # records yielded
+    bad_magic: int = 0           # wrong magic — skipped
+    truncated: int = 0           # short final chunk
+    nonfinite: int = 0           # records with NaN/Inf floats (still yielded)
+
+
+def iter_records_safe(
+    path: Path,
+    stats: "ParseStats | None" = None,
+    log=None,
+    resync: bool = True,
+) -> Iterator[Record]:
+    """Tolerant variant of :func:`iter_records`.
+
+    Real meter dumps occasionally contain a corrupt record, a garbage tail, or
+    non-finite floats. Rather than abort the whole session, this:
+
+    - on a short final chunk: stops cleanly (counts it as ``truncated``);
+    - on bad magic: if ``resync`` is True, scans forward byte-by-byte for the
+      next valid magic and continues (counts skipped bytes' worth as
+      ``bad_magic``); if False, skips the single record slot;
+    - flags (but still yields) records containing NaN/Inf floats.
+
+    Pass a :class:`ParseStats` to collect counters and an optional ``log``
+    callable (e.g. ``print``) to emit a one-line note per anomaly.
+    """
+    st = stats if stats is not None else ParseStats()
+    index = 0
+    with path.open("rb") as fh:
+        data_fmt = f"<{DATA_FLOATS}f"
+        while True:
+            offset = fh.tell()
+            chunk = fh.read(RECORD_SIZE)
+            if len(chunk) < RECORD_SIZE:
+                if chunk:
+                    st.truncated += 1
+                    if log:
+                        log(f"[parse] truncated tail: {len(chunk)} bytes at "
+                            f"offset 0x{offset:x} (discarded)")
+                return
+            st.total_seen += 1
+            if chunk[:4] != RECORD_MAGIC:
+                st.bad_magic += 1
+                if log:
+                    log(f"[parse] bad magic at offset 0x{offset:x} — "
+                        f"{'resyncing' if resync else 'skipping record'}")
+                if resync:
+                    # Step forward one byte and search for the next magic.
+                    fh.seek(offset + 1)
+                continue
+            start_hi, start_lo = struct.unpack_from("<II", chunk, 4)
+            end_hi, end_lo = struct.unpack_from("<II", chunk, 12)
+            start_ft = (start_hi << 32) | start_lo
+            end_ft = (end_hi << 32) | end_lo
+            floats = struct.unpack_from(data_fmt, chunk, HEADER_BYTES)
+            if any(f != f or f in (float("inf"), float("-inf")) for f in floats):
+                st.nonfinite += 1
+                if log:
+                    log(f"[parse] non-finite float(s) in record {index} "
+                        f"(offset 0x{offset:x}) — kept, treat with care")
+            yield Record(
+                index=index,
+                start=filetime_to_dt(start_ft),
+                end=filetime_to_dt(end_ft),
+                floats=floats,
+            )
+            index += 1
+            st.good += 1
+
+
 def from_csv(path: Path) -> Iterator[Record]:
     """Yield Record objects reconstructed from a previously-exported session CSV.
 
@@ -345,6 +419,160 @@ def export_csv(session_dir: Path, output: Path, limit: int | None = None,
         "reverse_cts": reverse_cts,
         "reversed_columns": sorted(f.name for f in FIELDS if f.index in flip),
     }
+
+
+def estimate_record_count(trend_path: Path) -> int:
+    """Cheap upper-bound record count from file size (no parse)."""
+    try:
+        return trend_path.stat().st_size // RECORD_SIZE
+    except OSError:
+        return 0
+
+
+def export_csv_multi(
+    session_dir: Path,
+    full_path: Path,
+    min_path: Path,
+    every: int = 1,
+    reverse_cts: bool | Iterable[str] = False,
+    max_full_rows: int | None = None,
+    time_shift: "dt.timedelta | None" = None,
+    build_store: bool = True,
+    log=None,
+    progress_every: int = 0,
+):
+    """Single streaming pass: write full + 1-min CSVs and (optionally) a store.
+
+    The 438 MB binary used to be parsed twice (once per ``export_csv`` call).
+    This walks ``trend.bin`` exactly once and fans the decoded records out to:
+
+    - ``full_path``: every ``effective_every``-th record;
+    - ``min_path``: one row per minute (every 60 source records), always full
+      coverage regardless of the row guard;
+    - an in-memory :class:`~fluke_3540.store.ColumnStore` (when ``build_store``),
+      built from EVERY record so analysis is never downsampled.
+
+    Large-session guard: if the projected full-resolution row count
+    (``record_count / every``) exceeds ``max_full_rows``, the full CSV's stride
+    is raised so it lands at/under the cap, and exactly what was downsampled is
+    logged. The 1-min CSV and the store are unaffected.
+
+    ``time_shift`` (e.g. from an ``--anchor-*`` flag) is applied to the CSV
+    timestamps and stamped into the store so the on-disk and in-memory views
+    agree on wall-clock.
+
+    Returns a dict with ``config``, ``rows_written_full``, ``rows_written_min``,
+    ``store`` (or None), ``parse_stats``, ``effective_every``, ``downsampled``.
+    """
+    # Local import avoids a parser->store->parser cycle at module load.
+    from .store import STORE_COLUMNS, ColumnStore, _resolve_indices
+
+    files = find_session_files(session_dir)
+    config = {}
+    if files["config_json"].exists():
+        config = json.loads(files["config_json"].read_text())
+
+    headers = ["record_index", "timestamp_utc", "window_end_utc"]
+    headers += [f.name for f in FIELDS]
+    flip = reverse_cts_indices(reverse_cts if reverse_cts else False)
+    shift = time_shift or dt.timedelta(0)
+
+    # Row-cap guard: raise the full-CSV stride if projected rows exceed the cap.
+    est = estimate_record_count(files["trend"])
+    effective_every = max(1, every)
+    downsampled = False
+    if max_full_rows is not None and max_full_rows > 0 and est > 0:
+        projected = est // effective_every
+        if projected > max_full_rows:
+            import math as _math
+            needed = _math.ceil(est / max_full_rows)
+            effective_every = max(effective_every, needed)
+            downsampled = True
+            if log:
+                log(f"[parse] full CSV would be ~{projected:,} rows "
+                    f"(> --max-csv-rows {max_full_rows:,}); raising stride "
+                    f"from every={every} to every={effective_every} "
+                    f"(~{est // effective_every:,} rows). 1-min CSV and "
+                    f"analysis store keep full resolution.")
+
+    store = ColumnStore(time_shift=shift) if build_store else None
+    col_idx = _resolve_indices(STORE_COLUMNS) if build_store else []
+
+    stats = ParseStats()
+    rows_full = 0
+    rows_min = 0
+    first_ts = None
+    last_ts = None
+
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    min_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with full_path.open("w", newline="") as ff, \
+         min_path.open("w", newline="") as fm:
+        wf = csv.writer(ff)
+        wm = csv.writer(fm)
+        wf.writerow(headers)
+        wm.writerow(headers)
+        for rec in iter_records_safe(files["trend"], stats=stats, log=log):
+            s_shift = rec.start + shift
+            e_shift = rec.end + shift
+            if first_ts is None:
+                first_ts = s_shift
+            last_ts = e_shift
+
+            # Build a flipped row lazily only when we actually write it.
+            def make_row():
+                row = [rec.index, s_shift.isoformat(), e_shift.isoformat()]
+                for f in FIELDS:
+                    v = rec.floats[f.index]
+                    if f.index in flip:
+                        v = -v
+                    row.append(v)
+                return row
+
+            if rec.index % effective_every == 0:
+                wf.writerow(make_row())
+                rows_full += 1
+            if rec.index % 60 == 0:
+                wm.writerow(make_row())
+                rows_min += 1
+
+            if store is not None:
+                cols = store._cols
+                floats = rec.floats
+                for name, idx in zip(STORE_COLUMNS, col_idx):
+                    # Flip store columns too so analysis sees the same sign as
+                    # the CSV (P/Q/PF totals depend on CT orientation).
+                    v = floats[idx]
+                    if idx in flip:
+                        v = -v
+                    cols[name].append(v)
+                store._start_ticks.append(_filetime_ticks(rec.start))
+                store._end_ticks.append(_filetime_ticks(rec.end))
+                store._n += 1
+
+            if progress_every and log and stats.good % progress_every == 0:
+                pct = (stats.good / est * 100) if est else 0.0
+                log(f"[parse]   {stats.good:,}/{est:,} records ({pct:.0f}%)")
+
+    return {
+        "config": config,
+        "rows_written_full": rows_full,
+        "rows_written_min": rows_min,
+        "store": store,
+        "parse_stats": stats,
+        "effective_every": effective_every,
+        "downsampled": downsampled,
+        "first_ts": first_ts.isoformat() if first_ts else None,
+        "last_ts": last_ts.isoformat() if last_ts else None,
+        "reversed_columns": sorted(f.name for f in FIELDS if f.index in flip),
+    }
+
+
+def _filetime_ticks(value: dt.datetime) -> int:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=dt.timezone.utc)
+    return int(round((value - FILETIME_EPOCH).total_seconds() * 10_000_000))
 
 
 def _parse_reverse_cts_arg(raw: str | None) -> bool | list[str]:
