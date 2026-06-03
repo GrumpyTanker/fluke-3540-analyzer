@@ -262,6 +262,57 @@ def iter_records_safe(
             st.good += 1
 
 
+def read_first_last_times(trend_path: Path) -> tuple[dt.datetime | None, dt.datetime | None]:
+    """Read just the first record's start and the last record's end (no full parse).
+
+    Seeks directly to the final aligned record, so this is O(1) regardless of
+    session length — used to compute ``--anchor-*`` time shifts cheaply.
+    """
+    size = trend_path.stat().st_size
+    n = size // RECORD_SIZE
+    if n == 0:
+        return None, None
+    with trend_path.open("rb") as fh:
+        head = fh.read(RECORD_SIZE)
+        if len(head) < RECORD_SIZE or head[:4] != RECORD_MAGIC:
+            first = None
+        else:
+            s_hi, s_lo = struct.unpack_from("<II", head, 4)
+            first = filetime_to_dt((s_hi << 32) | s_lo)
+        fh.seek((n - 1) * RECORD_SIZE)
+        tail = fh.read(RECORD_SIZE)
+        if len(tail) < RECORD_SIZE or tail[:4] != RECORD_MAGIC:
+            last = None
+        else:
+            e_hi, e_lo = struct.unpack_from("<II", tail, 12)
+            last = filetime_to_dt((e_hi << 32) | e_lo)
+    return first, last
+
+
+def compute_time_shift(
+    trend_path: Path,
+    anchor_start: dt.datetime | None = None,
+    anchor_end: dt.datetime | None = None,
+) -> dt.timedelta:
+    """Time shift mapping the meter's wrong RTC to a known real timestamp.
+
+    ``anchor_start`` pins the real start; ``anchor_end`` pins the real end.
+    They are mutually exclusive. Returns timedelta(0) if neither is given.
+    """
+    if anchor_start is not None and anchor_end is not None:
+        raise ValueError("anchor_start and anchor_end are mutually exclusive")
+    if anchor_start is None and anchor_end is None:
+        return dt.timedelta(0)
+    first, last = read_first_last_times(trend_path)
+    if anchor_start is not None:
+        if first is None:
+            raise ValueError("Cannot read first record time to anchor start")
+        return anchor_start - first
+    if last is None:
+        raise ValueError("Cannot read last record time to anchor end")
+    return anchor_end - last
+
+
 def from_csv(path: Path) -> Iterator[Record]:
     """Yield Record objects reconstructed from a previously-exported session CSV.
 

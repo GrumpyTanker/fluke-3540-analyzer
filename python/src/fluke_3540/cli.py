@@ -21,9 +21,10 @@ import csv as _csv
 from .events import Event, detect_events
 from .insights import Finding, analyze as analyze_insights, to_jsonable as finding_to_jsonable
 from .parser import (
-    _parse_reverse_cts_arg, export_csv, find_session_files, from_csv, iter_records,
-    open_session,
+    _parse_reverse_cts_arg, compute_time_shift, export_csv, export_csv_multi,
+    find_session_files, from_csv, iter_records, open_session,
 )
+from .store import ColumnStore
 from .plots import (
     GnuplotNotFound, WeasyPrintNotInstalled,
     render_event_zoom, render_full_session, render_snapshot_zoom,
@@ -131,6 +132,45 @@ def build_argparser() -> argparse.ArgumentParser:
                          "only flip those phases (plus totals).")
     ap.add_argument("--every", type=int, default=1, metavar="K",
                     help="Emit every K-th record into the CSV (default 1, all)")
+    ap.add_argument("--max-csv-rows", type=int, default=None, metavar="N",
+                    help="Cap the full-resolution CSV at ~N rows. If the session "
+                         "would exceed it, the stride is raised and the downsampling "
+                         "is logged. The 1-min CSV and analysis keep full resolution.")
+
+    # Clock-correction anchors (mutually exclusive)
+    anchor = ap.add_mutually_exclusive_group()
+    anchor.add_argument("--anchor-start", dest="anchor_start", type=_parse_time,
+                        default=None, metavar="ISO_TIME",
+                        help="Pin the real wall-clock START to this time, correcting "
+                             "a wrong meter RTC. Shifts every timestamp by the delta.")
+    anchor.add_argument("--anchor-end", dest="anchor_end", type=_parse_time,
+                        default=None, metavar="ISO_TIME",
+                        help="Pin the real wall-clock END to this time (mutually "
+                             "exclusive with --anchor-start).")
+
+    # Time-bucket splitting
+    ap.add_argument("--split-by", dest="split_by", type=str, default=None,
+                    metavar="PERIOD",
+                    help="Partition the session into time buckets, emitting a full "
+                         "per-bucket report plus a roll-up. PERIOD: hour|day|week or "
+                         "a duration like 30m, 6h, 2d.")
+
+    # Event markers / correlation
+    ap.add_argument("--mark", action="append", default=None, metavar="ISO=LABEL",
+                    help="Add an event marker 'ISO_TIME=label' (repeatable). Anchored "
+                         "timeline applies. Cross-referenced against detected events.")
+    ap.add_argument("--marks", type=Path, default=None, metavar="FILE.csv",
+                    help="CSV of markers with columns time,label.")
+
+    # Whole-session statistics + diurnal profile
+    ap.add_argument("--no-stats", action="store_true",
+                    help="Skip whole-session statistics (stats.json/csv).")
+    ap.add_argument("--tod-profile", dest="tod_profile", nargs="?",
+                    const="00:00-24:00", default=None, metavar="HH:MM-HH:MM",
+                    help="Build a time-of-day (diurnal) profile. Bare flag = full "
+                         "24 h; pass a window like 08:00-17:00.")
+    ap.add_argument("--tod-bin", dest="tod_bin", type=int, default=1, metavar="MINS",
+                    help="Time-of-day bin width in minutes (default 1).")
 
     # Output knobs
     ap.add_argument("--no-xlsx", action="store_true", help="Skip XLSX report")
@@ -197,23 +237,73 @@ def _parse_csv_session(args: argparse.Namespace, outdir: Path,
 
 
 def _parse_session(args: argparse.Namespace, outdir: Path,
-                   session_dir: Path) -> tuple[Path, Path, dict]:
-    """Phase 1A: parse trend.bin → session.csv + session_1min.csv."""
+                   session_dir: Path,
+                   ) -> tuple[Path, Path, dict, ColumnStore]:
+    """Phase 1A: single-pass parse trend.bin → CSVs + ColumnStore.
+
+    Walks the binary exactly once (was twice), building the full CSV, the 1-min
+    CSV, and the in-memory analysis store together. Applies the --anchor-* clock
+    correction and the --max-csv-rows guard.
+    """
     full_csv = outdir / "session.csv"
     min_csv = outdir / "session_1min.csv"
     reverse_cts = _parse_reverse_cts_arg(args.reverse_cts)
-    print(f"[parse] {args.session_dir}  →  {full_csv}")
-    parse_result = export_csv(
-        session_dir, full_csv,
+    trend = find_session_files(session_dir)["trend"]
+
+    time_shift = compute_time_shift(
+        trend,
+        anchor_start=getattr(args, "anchor_start", None),
+        anchor_end=getattr(args, "anchor_end", None),
+    )
+    if time_shift:
+        print(f"[parse] clock anchor: shifting timestamps by {time_shift}")
+
+    print(f"[parse] {args.session_dir}  →  {full_csv} (+ 1-min, single pass)")
+    res = export_csv_multi(
+        session_dir, full_csv, min_csv,
         every=args.every, reverse_cts=reverse_cts,
+        max_full_rows=getattr(args, "max_csv_rows", None),
+        time_shift=time_shift, build_store=True,
+        log=print, progress_every=100_000,
     )
-    print(f"        {parse_result['rows_written']:,} rows, {parse_result['columns']} cols")
-    print(f"[parse] downsampling to 1-min  →  {min_csv}")
-    export_csv(
-        session_dir, min_csv,
-        every=max(60, args.every), reverse_cts=reverse_cts,
-    )
-    return full_csv, min_csv, parse_result["config"]
+    st = res["parse_stats"]
+    print(f"        {res['rows_written_full']:,} full rows, "
+          f"{res['rows_written_min']:,} 1-min rows, store n={res['store'].n:,}")
+    if st.bad_magic or st.truncated or st.nonfinite:
+        print(f"        robustness: {st.bad_magic} bad-magic, "
+              f"{st.truncated} truncated, {st.nonfinite} non-finite (skipped/flagged)")
+    return full_csv, min_csv, res["config"], res["store"]
+
+
+def _store_from_csv(csv_path: Path) -> ColumnStore:
+    """Build a ColumnStore from a previously-exported session CSV (streaming)."""
+    return ColumnStore.from_records(from_csv(csv_path))
+
+
+def _window_filter_store(store: ColumnStore, from_time, to_time) -> ColumnStore:
+    """Return a store restricted to records within [from_time, to_time].
+
+    Operates on the already-shifted timeline (store.start/end apply time_shift).
+    Cheap: copies only the retained columns, not raw Records.
+    """
+    if not from_time and not to_time:
+        return store
+    keep = ColumnStore(time_shift=store.time_shift)
+    cols = store._cols
+    keep_cols = keep._cols
+    for i in range(store.n):
+        s = store.start(i)
+        e = store.end(i)
+        if from_time and s < from_time:
+            continue
+        if to_time and e > to_time:
+            continue
+        for name in store.columns:
+            keep_cols[name].append(cols[name][i])
+        keep._start_ticks.append(store._start_ticks[i])
+        keep._end_ticks.append(store._end_ticks[i])
+        keep._n += 1
+    return keep
 
 
 def _detect_and_save(args: argparse.Namespace, outdir: Path,
@@ -221,27 +311,26 @@ def _detect_and_save(args: argparse.Namespace, outdir: Path,
                      config: dict | None = None,
                      *,
                      csv_path: Path | None = None,
-                     ) -> tuple[list[Event], list[Snapshot], list[Finding]]:
+                     store: ColumnStore | None = None,
+                     ) -> tuple[list[Event], list[Snapshot], list[Finding], ColumnStore]:
     """Phase 1B: run event + snapshot + insights detection, write JSON.
 
-    Pass either trend_path (binary input) or csv_path (CSV input).
+    Pass a prebuilt store (binary input), or csv_path (CSV input). Returns the
+    (possibly window-filtered) store alongside the detections.
     """
     print("[detect] running event scan…")
-    if csv_path is not None:
-        recs = list(from_csv(csv_path))
-    else:
-        recs = list(iter_records(trend_path))
+    if store is None:
+        if csv_path is not None:
+            store = _store_from_csv(csv_path)
+        else:
+            store = ColumnStore.from_records(iter_records(trend_path))
     if args.from_time or args.to_time:
-        before = len(recs)
-        recs = [
-            r for r in recs
-            if (not args.from_time or r.start >= args.from_time)
-            and (not args.to_time or r.end <= args.to_time)
-        ]
-        print(f"         window filter: {before:,} → {len(recs):,} records")
-    events = detect_events(recs, nominal_ln_v=args.nominal_ln_v)
-    snaps = pick_snapshots(recs, events, n=args.snapshots)
-    findings = analyze_insights(recs, events, snaps, config or {})
+        before = store.n
+        store = _window_filter_store(store, args.from_time, args.to_time)
+        print(f"         window filter: {before:,} → {store.n:,} records")
+    events = detect_events(store, nominal_ln_v=args.nominal_ln_v)
+    snaps = pick_snapshots(store, events, n=args.snapshots)
+    findings = analyze_insights(store, events, snaps, config or {})
     print(f"         {len(events)} events, {len(snaps)} snapshots, "
           f"{len(findings)} insight(s)")
 
@@ -258,7 +347,23 @@ def _detect_and_save(args: argparse.Namespace, outdir: Path,
         [finding_to_jsonable(f) for f in findings], indent=2,
     ), encoding="utf-8")
     print(f"         wrote {events_path.name}, {snaps_path.name}, {insights_path.name}")
-    return events, snaps, findings
+    return events, snaps, findings, store
+
+
+def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
+                        store: ColumnStore,
+                        events: Sequence[Event],
+                        findings: Sequence[Finding],
+                        config: dict,
+                        full_csv: Path, min_csv: Path) -> None:
+    """Run the round-2 analysis features that depend on the in-memory store.
+
+    Each feature is opt-in via its flag; this is the single hook the CLI calls
+    after detection. Features are filled in incrementally (markers, per-bucket
+    summary, stats, time-of-day, split-by). Kept side-effect-light so it is a
+    no-op when no relevant flags are set.
+    """
+    return None
 
 
 def _write_summary_txt(outdir: Path, events: Sequence[Event],
@@ -508,16 +613,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         # CSV inputs skip the binary parse entirely).
         if _is_csv_input(args.session_dir):
             full_csv, min_csv, config = _parse_csv_session(args, outdir)
-            events, snaps, findings = _detect_and_save(
+            events, snaps, findings, store = _detect_and_save(
                 args, outdir, trend_path=None, config=config, csv_path=full_csv,
             )
             _write_summary_txt(outdir, events, snaps, findings, config)
         else:
             with open_session(args.session_dir) as session_dir:
-                full_csv, min_csv, config = _parse_session(args, outdir, session_dir)
-                trend = find_session_files(session_dir)["trend"]
-                events, snaps, findings = _detect_and_save(args, outdir, trend, config)
+                full_csv, min_csv, config, store = _parse_session(
+                    args, outdir, session_dir)
+                events, snaps, findings, store = _detect_and_save(
+                    args, outdir, trend_path=None, config=config, store=store)
                 _write_summary_txt(outdir, events, snaps, findings, config)
+
+        # Post-detection analysis features (markers, stats, tod, split) run on
+        # the in-memory store + on-disk CSVs.
+        _run_extra_analyses(args, outdir, store, events, findings, config,
+                            full_csv, min_csv)
 
         if getattr(args, "json_mode", False):
             _emit_json(events, snaps, findings, config)
