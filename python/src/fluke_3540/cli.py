@@ -154,6 +154,12 @@ def build_argparser() -> argparse.ArgumentParser:
                              "exclusive with --anchor-start).")
 
     # Time-bucket splitting
+    # Timezone-aware reporting (Feature H)
+    ap.add_argument("--tz", dest="tz", type=str, default=None, metavar="ZONE",
+                    help="IANA timezone (e.g. America/Chicago) for report "
+                         "timestamps. Reports then show local + UTC. Default UTC "
+                         "only. Anchors already accept ISO offsets.")
+
     ap.add_argument("--split-by", dest="split_by", type=str, default=None,
                     metavar="PERIOD",
                     help="Partition the session into time buckets, emitting a full "
@@ -654,12 +660,21 @@ def _write_summary_txt(outdir: Path, events: Sequence[Event],
                        snaps: Sequence[Snapshot],
                        findings: Sequence[Finding],
                        config: dict,
-                       narrative: str | None = None) -> None:
+                       narrative: str | None = None,
+                       tz=None, tz_name: str | None = None,
+                       store: "ColumnStore | None" = None) -> None:
     lines: list[str] = ["Fluke 3540 FC Session Summary", "=" * 32, ""]
     if narrative:
         lines.append("Executive Summary")
         lines.append("-" * 17)
         lines.append(narrative)
+        lines.append("")
+    # Time range (Feature H): local + UTC when --tz set, else UTC only.
+    if store is not None and store.n:
+        from .tzutil import format_local_utc, tz_label
+        lines.append(f"Time range ({tz_label(tz, tz_name)}):")
+        lines.append(f"  start  {format_local_utc(store.first_start, tz)}")
+        lines.append(f"  end    {format_local_utc(store.last_end, tz)}")
         lines.append("")
     if config:
         if config.get("asset_name"):
@@ -888,6 +903,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             kw.setdefault("file", sys.stderr)
             _original_print(*a, **kw)
 
+    # Resolve --tz once (Feature H). Invalid zones fail fast.
+    from .tzutil import resolve_tz
+    try:
+        args._tz = resolve_tz(getattr(args, "tz", None))
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
     if not args.session_dir.exists():
         print(f"ERROR: {args.session_dir} does not exist", file=sys.stderr)
         return 1
@@ -927,9 +950,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # the in-memory store + on-disk CSVs.
         stats, tod_rows, narrative, demand = _run_extra_analyses(
             args, outdir, store, events, findings, config, full_csv, min_csv)
-        # Re-write summary.txt with the executive narrative at the top.
+        # Re-write summary.txt with the executive narrative + tz-aware time range.
         _write_summary_txt(outdir, events, snaps, findings, config,
-                           narrative=narrative)
+                           narrative=narrative, tz=getattr(args, "_tz", None),
+                           tz_name=getattr(args, "tz", None), store=store)
 
         if getattr(args, "json_mode", False):
             _emit_json(events, snaps, findings, config)

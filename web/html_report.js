@@ -1,3 +1,5 @@
+import { formatLocalUtc, tzLabel } from './tzutil.js';
+
 // Self-contained HTML report — mirrors the Python html_report.py output so
 // the artifact looks the same regardless of which side built it.
 //
@@ -242,7 +244,25 @@ function demandHtml(demand) {
     `mean demand ${(demand.mean_demand_w / 1000).toFixed(1)} kW.</p>`;
 }
 
-export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [], wholeStats = null, narrative = null, pq = null, demand = null }) {
+// Time-range header in local + UTC (Feature H).
+function timeRangeHtml(records, tz) {
+  if (!records || !records.length) return '';
+  const t0 = records[0].startMs;
+  const t1 = records[records.length - 1].endMs;
+  let label = 'UTC';
+  let fmt = (ms) => new Date(ms).toISOString().replace(/\.000Z$/, 'Z').replace('Z', '+00:00');
+  if (tz && tz.toUpperCase() !== 'UTC') {
+    try {
+      formatLocalUtc(t0, tz);   // throws on an invalid zone -> fall back to UTC
+      label = tzLabel(tz);
+      fmt = (ms) => formatLocalUtc(ms, tz);
+    } catch (_) { /* fall back to UTC */ }
+  }
+  return `<p class='time-range'><strong>Time range (${esc(label)}):</strong> ` +
+    `${esc(fmt(t0))} → ${esc(fmt(t1))}</p>`;
+}
+
+export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [], wholeStats = null, narrative = null, pq = null, demand = null, tz = null }) {
   const energy = summarizeRecords(records, spec);
   const stats = {
     'Records (per-second)': records.length.toLocaleString(),
@@ -260,6 +280,7 @@ export function buildReportHtml({ title, config, records, spec, events, snapshot
   const body = [
     `<h1>${esc(title)}</h1>`,
     narrativeHtml,
+    timeRangeHtml(records, tz),
     '<h2>Summary</h2>',
     summaryDlHtml(stats, config),
     wholeStatsTableHtml(wholeStats),

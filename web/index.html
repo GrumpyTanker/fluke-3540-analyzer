@@ -70,6 +70,11 @@
           <button type="button" id="ct-reversal-apply" class="secondary">Apply Reverse CTs (all phases)</button>
         </div>
         <div id="summary-grid" class="summary-grid"></div>
+        <p class="tz-control">
+          <label for="tz-input"><small>Report timezone (IANA, e.g. America/Chicago) — blank = UTC:</small></label>
+          <input type="text" id="tz-input" placeholder="UTC" autocomplete="off" spellcheck="false">
+          <span id="tz-range"></span>
+        </p>
 
         <fieldset>
           <legend><strong>Reverse CTs</strong> <small>— flip sign of P / Q / PF / DPF / Wh / VARh on selected phases (totals follow)</small></legend>

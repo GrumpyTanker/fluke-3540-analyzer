@@ -133,6 +133,17 @@ def test_emit_analysis_golden():
         "sarfi": sarfi,
         "demand": demand,
     }
+
+    # Timezone formatting golden (Feature H): a fixed UTC instant rendered in
+    # UTC and America/Chicago. Stored as epoch ms so the JS test uses the same
+    # instant regardless of how it parses ISO.
+    from fluke_3540.tzutil import format_local_utc, resolve_tz
+    tz_instant = dt.datetime(2024, 1, 13, 15, 0, 0, tzinfo=dt.timezone.utc)
+    golden["timezone"] = {
+        "epoch_ms": int(tz_instant.timestamp() * 1000),
+        "utc": format_local_utc(tz_instant, None),
+        "chicago": format_local_utc(tz_instant, resolve_tz("America/Chicago")),
+    }
     GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     GOLDEN_PATH.write_text(json.dumps(golden, indent=2), encoding="utf-8")
 

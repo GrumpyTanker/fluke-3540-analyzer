@@ -15,6 +15,7 @@ import { MultiSession } from './multi_session.js';
 import { ColumnStore } from './column_store.js';
 import { wholeSessionStats, timeOfDayProfile, detectCtReversal, ctReversalNotice, ieee519Compliance, sarfiIndices, demandAnalysis } from './analysis.js';
 import { buildNarrative } from './narrative.js';
+import { formatLocalUtc, tzLabel } from './tzutil.js';
 import {
   computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
   peakHoursToString, saveTariff,
@@ -509,6 +510,23 @@ let currentTodRows = null;     // last computed time-of-day profile (for exports
 let currentNarrative = null;   // executive-summary narrative (Feature E)
 let currentPq = null;          // IEEE 519 + SARFI power-quality (Feature F)
 let currentDemand = null;      // rolling peak-demand analysis (Feature G)
+let currentTz = null;          // report timezone (IANA) or null = UTC (Feature H)
+
+const TZ_STORAGE_KEY = 'fluke3540.tz';
+
+// Render the tz-aware time range under the summary (local + UTC, or UTC only).
+function renderTzRange() {
+  const span = document.getElementById('tz-range');
+  if (!span || !currentTimeRangeMs) { if (span) span.textContent = ''; return; }
+  let valid = currentTz;
+  if (valid) {
+    // Validate the zone; fall back to UTC on a bad name.
+    try { formatLocalUtc(currentTimeRangeMs[0], valid); } catch (_) { valid = null; }
+  }
+  const [t0, t1] = currentTimeRangeMs;
+  span.textContent =
+    ` ${tzLabel(valid)} — start ${formatLocalUtc(t0, valid)}; end ${formatLocalUtc(t1, valid)}`;
+}
 
 // Median non-outage L-N voltage for SARFI residual %, from the stats sketch
 // (falls back to 277 V if voltage stats are unavailable).
@@ -741,6 +759,7 @@ function renderSummary() {
   els.summaryGrid.replaceWith(dl);
   dl.id = 'summary-grid';
   els.summaryGrid = dl;
+  renderTzRange();
 }
 
 // --- UI plumbing ------------------------------------------------------------
@@ -1095,6 +1114,7 @@ async function exportHtmlReport() {
     narrative: currentRange ? null : currentNarrative,
     pq: currentRange ? null : currentPq,
     demand: currentRange ? null : currentDemand,
+    tz: currentTz,
   });
 }
 
@@ -1664,6 +1684,21 @@ document.querySelectorAll('input[name=theme]').forEach((r) => {
   });
 });
 loadTheme();
+
+// --- Report timezone (Feature H) -------------------------------------------
+(function initTz() {
+  const input = document.getElementById('tz-input');
+  if (!input) return;
+  const saved = localStorage.getItem(TZ_STORAGE_KEY) || '';
+  input.value = saved;
+  currentTz = saved || null;
+  input.addEventListener('change', () => {
+    currentTz = input.value.trim() || null;
+    if (currentTz) localStorage.setItem(TZ_STORAGE_KEY, currentTz);
+    else localStorage.removeItem(TZ_STORAGE_KEY);
+    renderTzRange();
+  });
+})();
 
 // --- Keyboard shortcuts ----------------------------------------------------
 
