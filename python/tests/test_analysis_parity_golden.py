@@ -17,8 +17,9 @@ from pathlib import Path
 
 from fluke_3540.analysis import (
     ShiftSet, classify_itic, demand_analysis, detect_ct_reversal, event_itic,
-    ieee519_compliance, sarfi_indices, shift_comparison_rows, shift_occurrences,
-    time_of_day_profile, whole_session_stats,
+    ieee519_compliance, load_state_rows, sarfi_indices, session_energy,
+    shift_comparison_rows, shift_occurrences, time_of_day_profile,
+    whole_session_stats,
 )
 from fluke_3540.events import Event
 from fluke_3540.insights import Finding
@@ -165,9 +166,46 @@ def test_emit_analysis_golden():
         shift_store, shift_abc, events=[], tz=chi,
         nominal_ln_v=277.0, demand_window=15)
 
+    # --- Load-state split golden (active/standby + 3 energy figures) ------
+    # A deterministic bimodal session the JS test recreates exactly: 50 active
+    # (high current, +P) then 50 standby (low current, -P). The JS parity test
+    # builds the same records and compares load_state_rows / session_energy /
+    # the active-state detect_ct_reversal decision.
+    ls_base = dt.datetime(2026, 5, 27, 0, 0, 0, tzinfo=dt.timezone.utc)
+    ls_n_active, ls_n_standby = 50, 50
+    ls_overrides: dict = {}
+    plant_window(ls_overrides, 0, ls_n_active - 1, {
+        "I_a_avg_A": 239.0, "I_b_avg_A": 239.0, "I_c_avg_A": 239.0,
+        "P_total_avg_W": 97_000.0, "S_total_avg_VA": 206_000.0,
+        "PF_total_avg": 0.47, "V_THD_pct_a_avg": 3.0, "V_THD_pct_b_avg": 2.5,
+        "V_THD_pct_c_avg": 4.0})
+    plant_window(ls_overrides, ls_n_active, ls_n_active + ls_n_standby - 1, {
+        "I_a_avg_A": 16.0, "I_b_avg_A": 16.0, "I_c_avg_A": 16.0,
+        "P_total_avg_W": -7_600.0, "S_total_avg_VA": 11_800.0,
+        "PF_total_avg": -0.64, "V_THD_pct_a_avg": 3.0, "V_THD_pct_b_avg": 2.5,
+        "V_THD_pct_c_avg": 4.0})
+    ls_store = ColumnStore.from_records(
+        make_records(ls_n_active + ls_n_standby, base=ls_base,
+                     overrides=ls_overrides))
+    ls_rows = load_state_rows(ls_store, threshold_a=50.0)
+    ls_energy = session_energy(ls_store, threshold_a=50.0)
+    ls_ct = detect_ct_reversal(ls_store, active_threshold_a=50.0)
+
     golden = {
         "stats": stats,
         "tod_rows": tod,
+        "load_states": {
+            "base_epoch_ms": int(ls_base.timestamp() * 1000),
+            "n_active": ls_n_active,
+            "n_standby": ls_n_standby,
+            "threshold_a": 50.0,
+            "rows": ls_rows,
+            "energy": {k: v for k, v in ls_energy.items() if k != "note"},
+            "ct": {k: ls_ct[k] for k in (
+                "reversed", "basis", "active_threshold_a", "active_records",
+                "active_negative_records", "active_frac_negative",
+                "active_mean_p_w", "frac_negative")},
+        },
         "itic_points": itic_points,
         "itic": itic,
         "event_itic": event_itic_out,
@@ -216,3 +254,11 @@ def test_emit_analysis_golden():
     # 3 days × 2 shifts, but the first record (00:00) is night and the run
     # continues; occurrences = day/night alternation. Expect 6-7 occurrences.
     assert len(shift_occ_utc) >= 6
+    # Load states: active reads positive at high current -> NOT reversed despite
+    # standby dragging the whole-session negative fraction past 50%.
+    ls_by = {r["state"]: r for r in ls_rows}
+    assert ls_by["active"]["records"] == 50
+    assert ls_by["standby"]["records"] == 50
+    assert ls_ct["basis"] == "active"
+    assert ls_ct["reversed"] is False
+    assert ls_energy["energy_as_measured_kWh"] < ls_energy["energy_active_kWh"]

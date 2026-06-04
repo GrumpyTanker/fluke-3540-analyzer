@@ -131,10 +131,23 @@ def build_argparser() -> argparse.ArgumentParser:
                          "Bare flag = all phases; pass a comma list like 'a,c' to "
                          "only flip those phases (plus totals).")
     ap.add_argument("--auto-reverse-cts", action="store_true",
-                    help="Auto-detect a reversed-CT install (sustained negative "
-                         "real power on a load) and apply --reverse-cts "
-                         "automatically, with a loud notice. No-op if the data "
-                         "already reads as a normal load.")
+                    help="Auto-detect a reversed-CT install and apply "
+                         "--reverse-cts automatically, with a loud notice. The "
+                         "heuristic decides on the dominant high-current "
+                         "(active) state: is real power negative when current "
+                         "is high? No-op if the active state already reads as a "
+                         "normal load.")
+    ap.add_argument("--standby-threshold-a", dest="standby_threshold_a",
+                    type=float, default=None, metavar="A",
+                    help="Per-phase mean current (A) at/above which a record "
+                         "counts as ACTIVE load (else standby). Default 50. "
+                         "Drives the active/standby load-state split, the "
+                         "energy correction, and the magnitude-weighted "
+                         "reverse-CTs decision. See docs/LOAD_STATES.md.")
+    ap.add_argument("--load-states", dest="load_states", action="store_true",
+                    help="Force the active/standby load-state report "
+                         "(load_states.csv/json). Emitted by default in --auto; "
+                         "this flag is only needed to opt in elsewhere.")
     ap.add_argument("--every", type=int, default=1, metavar="K",
                     help="Emit every K-th record into the CSV (default 1, all)")
     ap.add_argument("--max-csv-rows", type=int, default=None, metavar="N",
@@ -222,6 +235,13 @@ def build_argparser() -> argparse.ArgumentParser:
                          "values win over the file's defaults.")
 
     return ap
+
+
+def _standby_threshold(args: argparse.Namespace) -> float:
+    """Resolve the active/standby current cut (A), defaulting to the module value."""
+    from .analysis import STANDBY_CURRENT_THRESHOLD_A
+    v = getattr(args, "standby_threshold_a", None)
+    return float(v) if v is not None else STANDBY_CURRENT_THRESHOLD_A
 
 
 def _is_csv_input(path: Path) -> bool:
@@ -313,7 +333,8 @@ def _parse_session(args: argparse.Namespace, outdir: Path,
     # the single-pass parse with the correction applied.
     store = res["store"]
     from .analysis import ct_reversal_notice, detect_ct_reversal
-    ct = detect_ct_reversal(store)
+    thr = _standby_threshold(args)
+    ct = detect_ct_reversal(store, active_threshold_a=thr)
     if ct["reversed"]:
         print(ct_reversal_notice(ct))
         already_reversed = bool(reverse_cts)
@@ -327,10 +348,15 @@ def _parse_session(args: argparse.Namespace, outdir: Path,
                 log=print, progress_every=100_000,
             )
             store = res["store"]
-            ct_after = detect_ct_reversal(store)
-            print(f"        after auto-reverse: P now negative for "
-                  f"{ct_after['frac_negative'] * 100:.1f}% of non-outage time "
-                  f"(mean P = {ct_after['mean_p_w'] / 1000:.1f} kW)")
+            ct_after = detect_ct_reversal(store, active_threshold_a=thr)
+            if ct_after.get("basis") == "active":
+                print(f"        after auto-reverse: active-state P now negative "
+                      f"for {ct_after['active_frac_negative'] * 100:.1f}% "
+                      f"(active mean P = {ct_after['active_mean_p_w'] / 1000:.1f} kW)")
+            else:
+                print(f"        after auto-reverse: P now negative for "
+                      f"{ct_after['frac_negative'] * 100:.1f}% of non-outage time "
+                      f"(mean P = {ct_after['mean_p_w'] / 1000:.1f} kW)")
     return full_csv, min_csv, res["config"], store
 
 
@@ -514,6 +540,59 @@ def _write_stats(outdir: Path, store: ColumnStore) -> dict:
     return stats
 
 
+def _write_load_states(outdir: Path, store: ColumnStore,
+                       threshold_a: float) -> dict:
+    """Active/standby load-state split + the three energy figures.
+
+    Writes load_states.csv (one row per state) + load_states.json (rows +
+    threshold + the three energy figures + the standby-sign caveat). Returns the
+    payload so the narrative/summary can surface the active PF + energy.
+    """
+    from .analysis import load_state_rows, session_energy
+    rows = load_state_rows(store, threshold_a=threshold_a)
+    energy = session_energy(store, threshold_a=threshold_a)
+    cols = ["state", "records", "hours", "duty_pct", "kWh", "P_avg_kW",
+            "P_min_kW", "P_max_kW", "I_avg_A", "S_avg_kVA", "PF_avg",
+            "V_LN_avg_V", "V_THD_p95_pct"]
+    with (outdir / "load_states.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(cols)
+        for r in rows:
+            w.writerow([_fmt_load_state_cell(c, r[c]) for c in cols])
+    payload = {
+        "standby_threshold_a": threshold_a,
+        "states": rows,
+        "energy": energy,
+        "note": energy["note"],
+    }
+    (outdir / "load_states.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8")
+    by = {r["state"]: r for r in rows}
+    a = by.get("active", {})
+    s = by.get("standby", {})
+    print(f"[load] active {a.get('duty_pct', 0):.0f}% duty: "
+          f"I={a.get('I_avg_A', 0):.0f} A  P={a.get('P_avg_kW', 0):+.1f} kW  "
+          f"PF={a.get('PF_avg', 0):+.2f} | standby "
+          f"I={s.get('I_avg_A', 0):.0f} A  P={s.get('P_avg_kW', 0):+.1f} kW")
+    print(f"[load] energy kWh — as-measured {energy['energy_as_measured_kWh']:.0f} | "
+          f"active {energy['energy_active_kWh']:.0f} | "
+          f"net(clip standby≥0) {energy['energy_net_clip_standby_kWh']:.0f}")
+    return payload
+
+
+def _fmt_load_state_cell(col: str, val):
+    """Format one load_states.csv cell (round floats; pass ints/strings)."""
+    if col == "state" or isinstance(val, int):
+        return val
+    if col in ("kWh", "P_avg_kW", "P_min_kW", "P_max_kW", "S_avg_kVA"):
+        return f"{val:.2f}"
+    if col == "PF_avg":
+        return f"{val:.3f}"
+    if col in ("hours", "duty_pct", "I_avg_A", "V_LN_avg_V", "V_THD_p95_pct"):
+        return f"{val:.2f}"
+    return f"{val:.2f}"
+
+
 def _write_markers(outdir: Path, markers, events: Sequence[Event]) -> None:
     from .analysis import correlate_markers
     corr = correlate_markers(markers, events)
@@ -644,12 +723,14 @@ def _run_shifts(args: argparse.Namespace, outdir: Path, store: ColumnStore,
     # (1) Headline aggregate comparison ------------------------------------
     rows = shift_comparison_rows(store, ss, events, tz=tz,
                                  nominal_ln_v=nominal_ln_v,
-                                 demand_window=demand_min)
+                                 demand_window=demand_min,
+                                 standby_threshold_a=_standby_threshold(args))
     cols = ["shift", "window", "records", "hours", "kWh", "P_total_avg_W",
             "P_total_min_W", "P_total_max_W", "peak_demand_kW",
             "peak_demand_window_secs", "PF_avg", "V_LN_avg_V", "V_LN_p5_V",
             "V_LN_p95_V", "V_THD_p95_pct", "n_outages", "n_dips", "n_swells",
-            "outage_minutes"]
+            "outage_minutes", "active_records", "active_duty_pct",
+            "active_kWh", "active_PF_avg"]
     with (outdir / "shift_comparison.csv").open("w", newline="", encoding="utf-8") as fh:
         w = _csv.writer(fh)
         w.writerow(cols)
@@ -705,11 +786,11 @@ def _fmt_shift_cell(col: str, val):
         return val
     if col == "kWh":
         return f"{val:.2f}"
-    if col in ("hours", "outage_minutes"):
+    if col in ("hours", "outage_minutes", "active_kWh"):
         return f"{val:.2f}"
-    if col == "PF_avg":
+    if col in ("PF_avg", "active_PF_avg"):
         return f"{val:.3f}"
-    if col == "peak_demand_kW":
+    if col in ("peak_demand_kW",):
         return f"{val:.2f}"
     return f"{val:.1f}"
 
@@ -738,12 +819,14 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     renderer can surface a Statistics sheet.
     """
     nominal_ln_v = _infer_nominal_ln_v(store, args.nominal_ln_v)
+    threshold_a = _standby_threshold(args)
     # ITIC always augments events.json (cheap, high-value for the deliverable).
     _augment_events_itic(outdir, events, nominal_ln_v)
 
-    # CT-reversal status snapshot for reports/web (cheap; one pass).
+    # CT-reversal status snapshot for reports/web (cheap; one pass). The decision
+    # is made on the dominant active (high-current) state.
     from .analysis import detect_ct_reversal, ieee519_compliance, sarfi_indices
-    ct = detect_ct_reversal(store)
+    ct = detect_ct_reversal(store, active_threshold_a=threshold_a)
     (outdir / "ct_reversal.json").write_text(json.dumps(ct, indent=2), encoding="utf-8")
 
     # IEEE 519 (THD) + IEEE 1159 / SARFI power-quality (Feature F).
@@ -773,6 +856,12 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     if not getattr(args, "no_stats", False):
         stats = _write_stats(outdir, store)
 
+    # Active/standby load-state split + energy correction. Cheap (a couple of
+    # streaming passes), so emit it alongside the other always-on artifacts
+    # (narrative/pq/demand). --load-states is accepted as an explicit opt-in but
+    # the report is produced unconditionally here.
+    load_states = _write_load_states(outdir, store, threshold_a)
+
     time_shift = store.time_shift
     markers = _parse_markers(args, time_shift)
     if markers:
@@ -790,14 +879,17 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
         else:
             _run_split_by(args, outdir, store, events, config, nominal_ln_v)
 
-    # Auto-narrative / executive summary (Feature E) — needs stats + ct.
-    narrative = _write_narrative(outdir, store, events, findings, stats, ct, config)
+    # Auto-narrative / executive summary (Feature E) — needs stats + ct + the
+    # load-state split (for the active-state PF + the corrected energy).
+    narrative = _write_narrative(outdir, store, events, findings, stats, ct,
+                                 config, load_states)
 
-    return stats, tod_rows, narrative, demand, shift_rows
+    return stats, tod_rows, narrative, demand, shift_rows, load_states
 
 
 def _write_narrative(outdir: Path, store: ColumnStore, events, findings,
-                     stats: dict, ct: dict, config: dict) -> str:
+                     stats: dict, ct: dict, config: dict,
+                     load_states: dict | None = None) -> str:
     """Build the executive summary, write narrative.md, return the prose."""
     from .narrative import build_narrative, narrative_markdown
     duration = None
@@ -806,6 +898,7 @@ def _write_narrative(outdir: Path, store: ColumnStore, events, findings,
     narrative = build_narrative(
         events, findings, stats or None, ct, config=config,
         total_records=store.n, duration_secs=duration,
+        load_states=load_states,
     )
     (outdir / "narrative.md").write_text(
         narrative_markdown(narrative, config), encoding="utf-8")
@@ -820,7 +913,8 @@ def _write_summary_txt(outdir: Path, events: Sequence[Event],
                        narrative: str | None = None,
                        tz=None, tz_name: str | None = None,
                        store: "ColumnStore | None" = None,
-                       shift_rows: "list[dict] | None" = None) -> None:
+                       shift_rows: "list[dict] | None" = None,
+                       load_states: "dict | None" = None) -> None:
     lines: list[str] = ["Fluke 3540 FC Session Summary", "=" * 32, ""]
     if narrative:
         lines.append("Executive Summary")
@@ -848,16 +942,43 @@ def _write_summary_txt(outdir: Path, events: Sequence[Event],
         for f in findings:
             lines.append(f"  [{f.severity:5s}] {f.kind:25s}  {f.headline}")
         lines.append("")
+    if load_states and load_states.get("states"):
+        thr = load_states.get("standby_threshold_a", 50.0)
+        lines.append(f"Load states (active vs standby, cut at {thr:.0f} A/phase)")
+        lines.append("-" * 16)
+        lines.append(f"  {'state':<8} {'duty%':>6}  {'records':>8}  "
+                     f"{'I_avg_A':>8}  {'P_avg_kW':>9}  {'S_avg_kVA':>10}  "
+                     f"{'PF':>6}  {'kWh':>9}")
+        for r in load_states["states"]:
+            lines.append(
+                f"  {r['state']:<8} {r['duty_pct']:>6.1f}  {r['records']:>8d}  "
+                f"{r['I_avg_A']:>8.1f}  {r['P_avg_kW']:>9.2f}  "
+                f"{r['S_avg_kVA']:>10.2f}  {r['PF_avg']:>6.3f}  {r['kWh']:>9.2f}")
+        en = load_states.get("energy", {})
+        if en:
+            lines.append("")
+            lines.append(f"  Energy as-measured (signed):   "
+                         f"{en['energy_as_measured_kWh']:>10.1f} kWh")
+            lines.append(f"  Energy active-only:            "
+                         f"{en['energy_active_kWh']:>10.1f} kWh")
+            lines.append(f"  Energy net (standby clip >=0): "
+                         f"{en['energy_net_clip_standby_kWh']:>10.1f} kWh")
+            lines.append("  Note: standby real-power sign is unreliable at low "
+                         "current; active/clip are the defensible consumption.")
+        lines.append("")
     if shift_rows:
         lines.append("Shift comparison")
         lines.append("-" * 16)
         lines.append(f"  {'shift':<10} {'window':>13}  {'records':>8}  "
-                     f"{'kWh':>9}  {'Pavg_kW':>8}  {'peak_kW':>8}  {'PF':>5}")
+                     f"{'kWh':>9}  {'Pavg_kW':>8}  {'peak_kW':>8}  {'PF':>5}  "
+                     f"{'actDuty%':>8}  {'actkWh':>9}  {'actPF':>6}")
         for r in shift_rows:
             lines.append(
                 f"  {r['shift']:<10} {r['window']:>13}  {r['records']:>8d}  "
                 f"{r['kWh']:>9.2f}  {r['P_total_avg_W']/1000:>8.2f}  "
-                f"{r['peak_demand_kW']:>8.2f}  {r['PF_avg']:>5.3f}")
+                f"{r['peak_demand_kW']:>8.2f}  {r['PF_avg']:>5.3f}  "
+                f"{r.get('active_duty_pct', 0):>8.1f}  "
+                f"{r.get('active_kWh', 0):>9.2f}  {r.get('active_PF_avg', 0):>6.3f}")
         lines.append("")
     lines.append(f"Events detected: {len(events)}")
     for ev in events:
@@ -960,6 +1081,12 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
                     related_event_ids=tuple(d.get("related_event_ids", [])),
                     recommended_actions=tuple(d.get("recommended_actions", [])),
                 ))
+        # Reload the load-state split from disk (also covers --plot-only).
+        load_states_payload = None
+        ls_path = outdir / "load_states.json"
+        if ls_path.exists():
+            import json as _json
+            load_states_payload = _json.loads(ls_path.read_text(encoding="utf-8"))
         write_html_report(
             html_path, charts_dir=charts_dir,
             config=config,
@@ -967,6 +1094,7 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
             events=events, snapshots=snaps,
             findings=loaded_findings,
             narrative=narrative,
+            load_states=load_states_payload,
         )
 
     if args.pdf:
@@ -1117,13 +1245,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # Post-detection analysis features (markers, stats, tod, split) run on
         # the in-memory store + on-disk CSVs.
-        stats, tod_rows, narrative, demand, shift_rows = _run_extra_analyses(
+        (stats, tod_rows, narrative, demand, shift_rows,
+         load_states) = _run_extra_analyses(
             args, outdir, store, events, findings, config, full_csv, min_csv)
         # Re-write summary.txt with the executive narrative + tz-aware time range.
         _write_summary_txt(outdir, events, snaps, findings, config,
                            narrative=narrative, tz=getattr(args, "_tz", None),
                            tz_name=getattr(args, "tz", None), store=store,
-                           shift_rows=shift_rows)
+                           shift_rows=shift_rows, load_states=load_states)
 
         if getattr(args, "json_mode", False):
             _emit_json(events, snaps, findings, config)

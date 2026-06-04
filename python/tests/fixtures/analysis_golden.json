@@ -295,6 +295,60 @@
       "i_max_A": 110.0
     }
   ],
+  "load_states": {
+    "base_epoch_ms": 1779840000000,
+    "n_active": 50,
+    "n_standby": 50,
+    "threshold_a": 50.0,
+    "rows": [
+      {
+        "state": "active",
+        "records": 50,
+        "hours": 0.013888888888888888,
+        "duty_pct": 50.0,
+        "kWh": 1.347222222222222,
+        "P_avg_kW": 97.0,
+        "P_min_kW": 97.0,
+        "P_max_kW": 97.0,
+        "I_avg_A": 239.0,
+        "S_avg_kVA": 206.0,
+        "PF_avg": 0.4699999988079071,
+        "V_LN_avg_V": 277.0,
+        "V_THD_p95_pct": 4.0062500000000005
+      },
+      {
+        "state": "standby",
+        "records": 50,
+        "hours": 0.013888888888888888,
+        "duty_pct": 50.0,
+        "kWh": -0.10555555555555554,
+        "P_avg_kW": -7.6,
+        "P_min_kW": -7.6,
+        "P_max_kW": -7.6,
+        "I_avg_A": 16.0,
+        "S_avg_kVA": 11.8,
+        "PF_avg": -0.6399999856948853,
+        "V_LN_avg_V": 277.0,
+        "V_THD_p95_pct": 4.0062500000000005
+      }
+    ],
+    "energy": {
+      "energy_as_measured_kWh": 1.2416666666666634,
+      "energy_active_kWh": 1.347222222222222,
+      "energy_net_clip_standby_kWh": 1.347222222222222,
+      "standby_threshold_a": 50.0
+    },
+    "ct": {
+      "reversed": false,
+      "basis": "active",
+      "active_threshold_a": 50.0,
+      "active_records": 50,
+      "active_negative_records": 0,
+      "active_frac_negative": 0.0,
+      "active_mean_p_w": 97000.0,
+      "frac_negative": 0.5
+    }
+  },
   "itic_points": [
     [
       70.0,
@@ -347,7 +401,13 @@
     "non_outage_records": 100,
     "negative_records": 70,
     "mean_p_w": -12000.0,
-    "threshold": 0.5
+    "threshold": 0.5,
+    "basis": "active",
+    "active_threshold_a": 50.0,
+    "active_records": 100,
+    "active_negative_records": 70,
+    "active_frac_negative": 0.7,
+    "active_mean_p_w": -12000.0
   },
   "narrative": "Asset MAC03 captured over 168.0 h (590,000 one-second records). The most significant event was a 18.5 min outage at 2024-01-13 22:01 UTC, preceded by a phase-c dip to 72%. Power factor (total) averaged 0.81 (p5 0.70, p95 0.95). Power factor below 0.85 for 99.8% of non-outage time. WARNING: real power is negative for 52% of non-outage time \u2014 the iFlex CTs are likely reversed; re-run with --reverse-cts. Bottom line: 1 alert-level finding(s) warrant follow-up.",
   "ieee519": {
@@ -452,7 +512,11 @@
         "n_outages": 0,
         "n_dips": 0,
         "n_swells": 0,
-        "outage_minutes": 0.0
+        "outage_minutes": 0.0,
+        "active_records": 2160,
+        "active_duty_pct": 100.0,
+        "active_kWh": 22.46690277777777,
+        "active_PF_avg": 0.9399999976158142
       },
       {
         "shift": "night",
@@ -473,7 +537,11 @@
         "n_outages": 0,
         "n_dips": 0,
         "n_swells": 0,
-        "outage_minutes": 0.0
+        "outage_minutes": 0.0,
+        "active_records": 2160,
+        "active_duty_pct": 100.0,
+        "active_kWh": 19.396847222222263,
+        "active_PF_avg": 0.9399999976158142
       }
     ],
     "occurrences_utc": [
@@ -540,7 +608,11 @@
         "n_outages": 0,
         "n_dips": 0,
         "n_swells": 0,
-        "outage_minutes": 0.0
+        "outage_minutes": 0.0,
+        "active_records": 1440,
+        "active_duty_pct": 100.0,
+        "active_kWh": 14.70750000000002,
+        "active_PF_avg": 0.939999997615815
       },
       {
         "shift": "B",
@@ -561,7 +633,11 @@
         "n_outages": 0,
         "n_dips": 0,
         "n_swells": 0,
-        "outage_minutes": 0.0
+        "outage_minutes": 0.0,
+        "active_records": 1440,
+        "active_duty_pct": 100.0,
+        "active_kWh": 12.94979166666667,
+        "active_PF_avg": 0.939999997615815
       },
       {
         "shift": "C",
@@ -582,7 +658,11 @@
         "n_outages": 0,
         "n_dips": 0,
         "n_swells": 0,
-        "outage_minutes": 0.0
+        "outage_minutes": 0.0,
+        "active_records": 1440,
+        "active_duty_pct": 100.0,
+        "active_kWh": 14.206458333333323,
+        "active_PF_avg": 0.939999997615815
       }
     ]
   },

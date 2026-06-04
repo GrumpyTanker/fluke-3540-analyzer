@@ -45,12 +45,16 @@ def build_narrative(
     config: dict | None = None,
     total_records: int | None = None,
     duration_secs: float | None = None,
+    load_states: dict | None = None,
 ) -> str:
     """Return a deterministic plain-English executive summary string.
 
     ``events`` are Event objects (id/kind/t_start/t_end/severity/affected_phases),
     ``findings`` are Finding objects (kind/severity/headline), ``stats`` is the
     whole_session_stats dict, ``ct_reversal`` is detect_ct_reversal output.
+    ``load_states`` is the _write_load_states payload (states + energy); when
+    present, the headline PF is the ACTIVE-state PF and the corrected energy
+    figures are surfaced.
     """
     sentences: list[str] = []
     config = config or {}
@@ -105,8 +109,48 @@ def build_narrative(
     else:
         sentences.append("No outages, dips, or swells were detected.")
 
-    # 3) Power factor / imbalance from stats + findings
-    if stats and "PF_total_avg" in stats:
+    # 2b) Active/standby load split + corrected energy (bimodal loads).
+    if load_states and load_states.get("states"):
+        by = {r.get("state"): r for r in load_states["states"]}
+        a = by.get("active")
+        s = by.get("standby")
+        if a and a.get("records"):
+            bits = (
+                f"The load is bimodal: an ACTIVE state ({a['duty_pct']:.0f}% "
+                f"duty, {a['I_avg_A']:.0f} A/phase, {a['P_avg_kW']:+.0f} kW, "
+                f"PF {a['PF_avg']:+.2f})")
+            if s and s.get("records"):
+                bits += (
+                    f" and a STANDBY state ({s['duty_pct']:.0f}% duty, "
+                    f"{s['I_avg_A']:.0f} A/phase, {s['P_avg_kW']:+.0f} kW)")
+            sentences.append(bits + ".")
+        energy = load_states.get("energy")
+        if energy:
+            sentences.append(
+                f"Energy: {energy['energy_as_measured_kWh']:.0f} kWh "
+                f"as-measured (signed), {energy['energy_active_kWh']:.0f} kWh "
+                f"active-only, {energy['energy_net_clip_standby_kWh']:.0f} kWh "
+                "net (standby clipped >=0). Standby real-power sign is "
+                "unreliable at low current, so the active/clip figures are the "
+                "defensible consumption.")
+
+    # 3) Power factor / imbalance from stats + findings. For a bimodal load the
+    # headline PF is the ACTIVE-state PF (the blended whole-session PF is
+    # meaningless); the raw whole-session PF is kept but de-emphasized.
+    active_pf = None
+    if load_states and load_states.get("states"):
+        for r in load_states["states"]:
+            if r.get("state") == "active" and r.get("records"):
+                active_pf = r.get("PF_avg")
+                break
+    if active_pf is not None:
+        whole = ""
+        if stats and "PF_total_avg" in stats:
+            whole = (f" (whole-session blended PF {stats['PF_total_avg']['mean']:.2f}, "
+                     "not meaningful for a bimodal load)")
+        sentences.append(
+            f"Active-state power factor averaged {active_pf:.2f}{whole}.")
+    elif stats and "PF_total_avg" in stats:
         pf = stats["PF_total_avg"]
         sentences.append(
             f"Power factor (total) averaged {pf['mean']:.2f} "
