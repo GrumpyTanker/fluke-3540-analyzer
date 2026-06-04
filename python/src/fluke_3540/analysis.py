@@ -610,6 +610,345 @@ def slice_store(store: ColumnStore, lo: int, hi: int) -> ColumnStore:
     return sub
 
 
+def gather_store(store: ColumnStore, indices: Sequence[int]) -> ColumnStore:
+    """Like :func:`slice_store` but over an arbitrary (possibly non-contiguous)
+    list of record indices.
+
+    Used by shift aggregation: a "night" shift recurs daily, so its records
+    are scattered through the store rather than forming one contiguous range.
+    ``indices`` are taken in the given order (callers pass them ascending so
+    timestamps stay monotonic, which keeps kWh/demand roll-ups well-defined).
+    """
+    sub = ColumnStore(time_shift=store.time_shift)
+    cols = store.columns
+    src = {name: store._cols[name] for name in cols}
+    dst = {name: sub._cols[name] for name in cols}
+    s_ticks = store._start_ticks
+    e_ticks = store._end_ticks
+    for i in indices:
+        for name in cols:
+            dst[name].append(src[name][i])
+        sub._start_ticks.append(s_ticks[i])
+        sub._end_ticks.append(e_ticks[i])
+    sub._n = len(sub._start_ticks)
+    return sub
+
+
+# --- Generalized named shift/period splitting (--split-by shifts) ------------
+
+UNASSIGNED_SHIFT = "unassigned"
+
+
+def _parse_hhmm(text: str) -> int:
+    """Parse 'HH:MM' (colon required) to minute-of-day in [0, 1440].
+
+    '24:00' is accepted as end-of-day (1440). Raises ValueError otherwise.
+    """
+    s = text.strip()
+    if ":" not in s:
+        raise ValueError(f"shift time must be HH:MM (with a colon): {text!r}")
+    hh, _, mm = s.partition(":")
+    if not (hh.isdigit() and mm.isdigit()):
+        raise ValueError(f"shift time must be numeric HH:MM: {text!r}")
+    h = int(hh)
+    m = int(mm)
+    if m >= 60:
+        raise ValueError(f"shift minutes out of range in {text!r}")
+    total = h * 60 + m
+    if total < 0 or total > 1440:
+        raise ValueError(f"shift time out of range (00:00..24:00): {text!r}")
+    return total
+
+
+@dataclass(frozen=True)
+class Shift:
+    """One named shift window, in minutes-of-day (report-tz wall clock).
+
+    ``end_min <= start_min`` means the window wraps past midnight, e.g.
+    18:00-06:00 covers [18:00, 24:00) plus [00:00, 06:00).
+    """
+    name: str
+    start_min: int
+    end_min: int
+
+    @property
+    def wraps(self) -> bool:
+        return self.end_min <= self.start_min
+
+    def contains_minute(self, mod: int) -> bool:
+        """Is minute-of-day ``mod`` inside this window? start inclusive, end
+        exclusive; wrap-aware."""
+        if not self.wraps:
+            return self.start_min <= mod < self.end_min
+        # Wrapping: [start, 1440) U [0, end)
+        return mod >= self.start_min or mod < self.end_min
+
+    def length_minutes(self) -> int:
+        if self.wraps:
+            return (1440 - self.start_min) + self.end_min
+        return self.end_min - self.start_min
+
+    @property
+    def window_str(self) -> str:
+        def fmt(m: int) -> str:
+            return f"{(m // 60) % 24:02d}:{m % 60:02d}" if m != 1440 else "24:00"
+        return f"{fmt(self.start_min)}-{fmt(self.end_min)}"
+
+
+@dataclass(frozen=True)
+class ShiftSet:
+    """An ordered collection of named shift windows.
+
+    Order matters: each record is assigned to the FIRST window it matches, so
+    overlaps resolve deterministically.
+    """
+    shifts: tuple[Shift, ...]
+
+    @classmethod
+    def parse(cls, text: str) -> "ShiftSet":
+        """Parse 'name=HH:MM-HH:MM,name=HH:MM-HH:MM,...'."""
+        out: list[Shift] = []
+        seen: set[str] = set()
+        parts = [p.strip() for p in text.split(",") if p.strip()]
+        if not parts:
+            raise ValueError(f"no shifts parsed from {text!r}")
+        for part in parts:
+            name, sep, window = part.partition("=")
+            name = name.strip()
+            if not sep or not name:
+                raise ValueError(
+                    f"shift must be name=HH:MM-HH:MM: {part!r}")
+            a, dash, b = window.partition("-")
+            if not dash:
+                raise ValueError(
+                    f"shift window must be HH:MM-HH:MM: {window!r}")
+            start = _parse_hhmm(a)
+            end = _parse_hhmm(b)
+            if start == end:
+                raise ValueError(
+                    f"shift {name!r} has a zero-length window {window!r}")
+            if name in seen:
+                raise ValueError(f"duplicate shift name {name!r}")
+            seen.add(name)
+            out.append(Shift(name, start, end))
+        return cls(tuple(out))
+
+    @classmethod
+    def from_spec(cls, spec: Sequence[dict]) -> "ShiftSet":
+        """Build from a list of {name, start, end} dicts (the --shifts-file form)."""
+        text = ",".join(
+            f"{s['name']}={s['start']}-{s['end']}" for s in spec)
+        return cls.parse(text)
+
+    @classmethod
+    def default(cls) -> "ShiftSet":
+        return cls.parse("day=06:00-18:00,night=18:00-06:00")
+
+    # --- validation --------------------------------------------------------
+    def coverage_issues(self) -> list[str]:
+        """Warn if the windows don't tile 24 h (gaps or overlaps).
+
+        Walks minute-of-day 0..1439 counting how many windows cover each
+        minute. Reports the count of uncovered minutes (gap) and doubly-covered
+        minutes (overlap). Empty list = clean 24 h tiling.
+        """
+        cover = [0] * 1440
+        for sh in self.shifts:
+            for m in range(1440):
+                if sh.contains_minute(m):
+                    cover[m] += 1
+        gap = sum(1 for c in cover if c == 0)
+        overlap = sum(1 for c in cover if c > 1)
+        issues: list[str] = []
+        if gap:
+            issues.append(
+                f"{gap} minute(s)/day fall in NO shift window (gap); those "
+                f"records go to '{UNASSIGNED_SHIFT}'.")
+        if overlap:
+            issues.append(
+                f"{overlap} minute(s)/day are covered by MORE THAN ONE shift "
+                "(overlap); the first matching window wins.")
+        return issues
+
+
+def _localize_minute(t: dt.datetime, tz) -> int:
+    """Minute-of-day for ``t`` in the report timezone ``tz`` (UTC if None)."""
+    if tz is not None:
+        t = t.astimezone(tz)
+    return t.hour * 60 + t.minute
+
+
+def aggregate_shifts(store: ColumnStore, ss: ShiftSet, tz=None) -> dict[str, list[int]]:
+    """Group record indices by shift NAME, evaluating windows in ``tz``.
+
+    Returns {shift_name: [ascending indices]}. Each named shift present in
+    ``ss`` always has a key (possibly empty). Records matching no window are
+    collected under ``UNASSIGNED_SHIFT`` (only added when non-empty).
+    """
+    out: dict[str, list[int]] = {sh.name: [] for sh in ss.shifts}
+    for i in range(store.n):
+        mod = _localize_minute(store.start(i), tz)
+        for sh in ss.shifts:
+            if sh.contains_minute(mod):
+                out[sh.name].append(i)
+                break
+        else:
+            out.setdefault(UNASSIGNED_SHIFT, []).append(i)
+    return out
+
+
+def shift_occurrences(store: ColumnStore, ss: ShiftSet, tz=None
+                      ) -> list[tuple[str, str, int, int]]:
+    """Partition records into contiguous per-OCCURRENCE shift buckets.
+
+    Returns a time-ordered list of (label, shift_name, lo, hi_exclusive). A
+    new occurrence starts whenever the matched shift name changes between
+    consecutive records. A wrap-past-midnight window stays ONE occurrence
+    (the name does not change), labeled by the occurrence's START date in the
+    report timezone, e.g. ``"night 2026-05-29"``.
+    """
+    n = store.n
+    if n == 0:
+        return []
+
+    def name_at(i: int) -> str:
+        mod = _localize_minute(store.start(i), tz)
+        for sh in ss.shifts:
+            if sh.contains_minute(mod):
+                return sh.name
+        return UNASSIGNED_SHIFT
+
+    def start_date(i: int) -> str:
+        t = store.start(i)
+        if tz is not None:
+            t = t.astimezone(tz)
+        return t.strftime("%Y-%m-%d")
+
+    out: list[tuple[str, str, int, int]] = []
+    cur_name = name_at(0)
+    lo = 0
+    for i in range(1, n):
+        nm = name_at(i)
+        if nm != cur_name:
+            out.append((f"{cur_name} {start_date(lo)}", cur_name, lo, i))
+            cur_name = nm
+            lo = i
+    out.append((f"{cur_name} {start_date(lo)}", cur_name, lo, n))
+    return out
+
+
+def shift_comparison_rows(store: ColumnStore, ss: ShiftSet, events: Sequence,
+                          tz=None, nominal_ln_v: float = 277.0,
+                          demand_window: int = 15) -> list[dict]:
+    """The headline per-shift-name aggregate comparison.
+
+    One row per named shift (plus ``unassigned`` if any records land there),
+    aggregating ALL records of that shift across the whole session. ``events``
+    are filed to a shift by the shift their ``t_start`` falls in.
+
+    ``demand_window`` is in MINUTES (peak rolling demand within the shift's
+    records). Per-row energy/avg/percentiles are memory-bounded.
+    """
+    by_name = aggregate_shifts(store, ss, tz=tz)
+    win_by_name = {sh.name: sh for sh in ss.shifts}
+
+    # File events to a shift by their start time's window.
+    ev_by_name: dict[str, list] = {nm: [] for nm in by_name}
+    for e in events:
+        mod = _localize_minute(e.t_start, tz)
+        placed = False
+        for sh in ss.shifts:
+            if sh.contains_minute(mod):
+                ev_by_name.setdefault(sh.name, []).append(e)
+                placed = True
+                break
+        if not placed:
+            ev_by_name.setdefault(UNASSIGNED_SHIFT, []).append(e)
+
+    rows: list[dict] = []
+    for name, idxs in by_name.items():
+        sub = gather_store(store, idxs)
+        sh = win_by_name.get(name)
+        window = sh.window_str if sh is not None else "—"
+        bucket_events = ev_by_name.get(name, [])
+        rows.append(_shift_row(name, window, sub, bucket_events,
+                               nominal_ln_v, demand_window))
+    return rows
+
+
+def _shift_row(name: str, window: str, sub: ColumnStore, bucket_events,
+               nominal_ln_v: float, demand_window: int) -> dict:
+    """Aggregate one shift's records into a comparison row."""
+    nrec = sub.n
+    p = sub.col("P_total_avg_W")
+    pf = sub.col("PF_total_avg")
+    va = sub.col("V_LN_a_avg_V"); vb = sub.col("V_LN_b_avg_V"); vc = sub.col("V_LN_c_avg_V")
+    vth_a = sub.col("V_THD_pct_a_avg")
+    vth_b = sub.col("V_THD_pct_b_avg")
+    vth_c = sub.col("V_THD_pct_c_avg")
+
+    p_mom = _RunningMoments()
+    p_min = math.inf; p_max = -math.inf
+    pf_mom = _RunningMoments()
+    v_mom = _RunningMoments()
+    v_sketch = _PercentileSketch(0.0, 400.0)
+    vthd_sketch = _PercentileSketch(0.0, 50.0)
+    for i in range(nrec):
+        pv = p[i]
+        if math.isfinite(pv):
+            p_mom.add(pv)
+            p_min = min(p_min, pv); p_max = max(p_max, pv)
+        pfi = pf[i]
+        if math.isfinite(pfi):
+            pf_mom.add(pfi)
+        for vv in (va[i], vb[i], vc[i]):
+            if math.isfinite(vv) and vv > 50.0:  # ignore outage zeros
+                v_mom.add(vv); v_sketch.add(vv)
+        for tv in (vth_a[i], vth_b[i], vth_c[i]):
+            if math.isfinite(tv):
+                vthd_sketch.add(tv)
+
+    p_mean = p_mom.mean if p_mom.n else 0.0
+    hours = p_mom.n / 3600.0  # 1 record == 1 s
+    kwh = p_mean / 1000.0 * hours
+
+    # Peak rolling demand within the shift's gathered records.
+    demand = demand_analysis(sub, window_secs=max(1, demand_window * 60))
+
+    n_out = sum(1 for e in bucket_events if e.kind == "outage")
+    n_dip = sum(1 for e in bucket_events if e.kind == "dip")
+    n_swell = sum(1 for e in bucket_events if e.kind == "swell")
+    outage_minutes = sum(
+        (e.t_end - e.t_start).total_seconds() for e in bucket_events
+        if e.kind == "outage") / 60.0
+
+    def q(sketch, p_):
+        v = sketch.quantile(p_)
+        return 0.0 if (v != v) else v
+
+    return {
+        "shift": name,
+        "window": window,
+        "records": nrec,
+        "hours": hours,
+        "kWh": kwh,
+        "P_total_avg_W": p_mean,
+        "P_total_min_W": (p_min if p_min != math.inf else 0.0),
+        "P_total_max_W": (p_max if p_max != -math.inf else 0.0),
+        "peak_demand_kW": demand["peak_demand_kw"],
+        "peak_demand_window_secs": demand["window_secs"],
+        "PF_avg": (pf_mom.mean if pf_mom.n else 0.0),
+        "V_LN_avg_V": (v_mom.mean if v_mom.n else 0.0),
+        "V_LN_p5_V": q(v_sketch, 0.05),
+        "V_LN_p95_V": q(v_sketch, 0.95),
+        "V_THD_p95_pct": q(vthd_sketch, 0.95),
+        "n_outages": n_out,
+        "n_dips": n_dip,
+        "n_swells": n_swell,
+        "outage_minutes": outage_minutes,
+    }
+
+
 # --- Event markers / correlation (--mark / --marks) -------------------------
 
 @dataclass(frozen=True)
