@@ -16,12 +16,14 @@ import json
 from pathlib import Path
 
 from fluke_3540.analysis import (
-    classify_itic, demand_analysis, detect_ct_reversal, event_itic,
-    ieee519_compliance, sarfi_indices, time_of_day_profile, whole_session_stats,
+    ShiftSet, classify_itic, demand_analysis, detect_ct_reversal, event_itic,
+    ieee519_compliance, sarfi_indices, shift_comparison_rows, shift_occurrences,
+    time_of_day_profile, whole_session_stats,
 )
 from fluke_3540.events import Event
 from fluke_3540.insights import Finding
 from fluke_3540.narrative import build_narrative
+from fluke_3540.parser import Record
 from fluke_3540.store import ColumnStore
 
 from conftest import make_records, plant_window
@@ -121,6 +123,48 @@ def test_emit_analysis_golden():
     ramp_store = ColumnStore.from_records(make_records(600, overrides=ramp_over))
     demand = demand_analysis(ramp_store, window_secs=120, series_step_secs=120)
 
+    # --- Shifts golden (Feature: generalized shift splitting) -------------
+    # A deterministic 3-day, MINUTE-resolution session crossing day/night
+    # boundaries. The JS parity test recreates this record set exactly
+    # (startMs = SHIFT_BASE + n*60000) and compares aggregate/occurrence/
+    # comparison outputs. Records are minute-spaced because per-second records
+    # all collapse to one minute-of-day, which the shift logic keys on.
+    shift_base = dt.datetime(2026, 5, 27, 0, 0, 0, tzinfo=dt.timezone.utc)
+    n_min = 3 * 1440  # 3 full days of one-minute records
+    shift_recs: list[Record] = []
+    for n in range(n_min):
+        start = shift_base + dt.timedelta(minutes=n)
+        # Deterministic, day/night-distinguishable power + voltage shapes.
+        mod = (n % 1440)
+        p_w = 30_000.0 + 5_000.0 * (1 if (360 <= mod < 1080) else 0) + (n % 97) * 50.0
+        v = 277.0 + ((n % 11) - 5) * 0.4
+        floats = [0.0] * len(make_records(1)[0].floats)
+        from conftest import FIELD_INDEX
+        for ph in ("a", "b", "c"):
+            floats[FIELD_INDEX[f"V_LN_{ph}_avg_V"]] = v
+            floats[FIELD_INDEX[f"I_{ph}_avg_A"]] = 100.0 + (n % 13)
+        floats[FIELD_INDEX["P_total_avg_W"]] = p_w
+        floats[FIELD_INDEX["PF_total_avg"]] = 0.92 + (n % 5) * 0.01
+        floats[FIELD_INDEX["V_THD_pct_a_avg"]] = 3.0 + (n % 7) * 0.3
+        floats[FIELD_INDEX["V_THD_pct_b_avg"]] = 2.5 + (n % 5) * 0.2
+        floats[FIELD_INDEX["V_THD_pct_c_avg"]] = 4.0 + (n % 3) * 0.25
+        shift_recs.append(Record(index=n, start=start,
+                                 end=start + dt.timedelta(minutes=1),
+                                 floats=tuple(floats)))
+    shift_store = ColumnStore.from_records(shift_recs)
+    shift_ss = ShiftSet.parse("day=06:00-18:00,night=18:00-06:00")
+    shift_events_utc = shift_comparison_rows(
+        shift_store, shift_ss, events=[], tz=None,
+        nominal_ln_v=277.0, demand_window=15)
+    shift_occ_utc = shift_occurrences(shift_store, shift_ss, tz=None)
+    # 3-shift A/B/C in America/Chicago to exercise the tz-localized path.
+    shift_abc = ShiftSet.parse("A=06:00-14:00,B=14:00-22:00,C=22:00-06:00")
+    from fluke_3540.tzutil import resolve_tz
+    chi = resolve_tz("America/Chicago")
+    shift_abc_chi = shift_comparison_rows(
+        shift_store, shift_abc, events=[], tz=chi,
+        nominal_ln_v=277.0, demand_window=15)
+
     golden = {
         "stats": stats,
         "tod_rows": tod,
@@ -132,6 +176,16 @@ def test_emit_analysis_golden():
         "ieee519": ieee519,
         "sarfi": sarfi,
         "demand": demand,
+        "shifts": {
+            "base_epoch_ms": int(shift_base.timestamp() * 1000),
+            "n_records": n_min,
+            "comparison_utc": shift_events_utc,
+            "occurrences_utc": [
+                {"label": l, "name": nm, "lo": lo, "hi": hi}
+                for (l, nm, lo, hi) in shift_occ_utc
+            ],
+            "comparison_abc_chicago": shift_abc_chi,
+        },
     }
 
     # Timezone formatting golden (Feature H): a fixed UTC instant rendered in
@@ -155,3 +209,10 @@ def test_emit_analysis_golden():
     assert len(tod) > 0
     assert ct["reversed"] is True
     assert abs(ct["frac_negative"] - 0.70) < 1e-9
+    # Shifts: day window 06:00-18:00 = 720 min/day × 3 days = 2160 records.
+    by = {r["shift"]: r for r in shift_events_utc}
+    assert by["day"]["records"] == 720 * 3
+    assert by["night"]["records"] == 720 * 3
+    # 3 days × 2 shifts, but the first record (00:00) is night and the run
+    # continues; occurrences = day/night alternation. Expect 6-7 occurrences.
+    assert len(shift_occ_utc) >= 6

@@ -502,3 +502,308 @@ export function correlateMarkers(markers, events) {
   }
   return out;
 }
+
+// --- Generalized named shift/period splitting (--split-by shifts) ----------
+// JS port of python/.../analysis.py Shift / ShiftSet + aggregate / occurrences
+// / comparison. The store holds UTC epoch ms; shift windows are evaluated in
+// the REPORT timezone (tzName, IANA) — localize minute-of-day BEFORE applying
+// the HH:MM rule, exactly like the Python side. tzName null/'UTC' = UTC.
+
+export const UNASSIGNED_SHIFT = 'unassigned';
+
+function parseHhmm(text) {
+  const s = String(text).trim();
+  if (!s.includes(':')) throw new Error(`shift time must be HH:MM (with a colon): ${text}`);
+  const [hh, mm] = s.split(':');
+  if (!/^\d+$/.test(hh) || !/^\d+$/.test(mm)) {
+    throw new Error(`shift time must be numeric HH:MM: ${text}`);
+  }
+  const h = parseInt(hh, 10);
+  const m = parseInt(mm, 10);
+  if (m >= 60) throw new Error(`shift minutes out of range in ${text}`);
+  const total = h * 60 + m;
+  if (total < 0 || total > 1440) throw new Error(`shift time out of range (00:00..24:00): ${text}`);
+  return total;
+}
+
+export class Shift {
+  constructor(name, startMin, endMin) {
+    this.name = name;
+    this.startMin = startMin;
+    this.endMin = endMin;
+  }
+
+  get wraps() { return this.endMin <= this.startMin; }
+
+  containsMinute(mod) {
+    if (!this.wraps) return this.startMin <= mod && mod < this.endMin;
+    return mod >= this.startMin || mod < this.endMin;
+  }
+
+  lengthMinutes() {
+    return this.wraps ? (1440 - this.startMin) + this.endMin : this.endMin - this.startMin;
+  }
+
+  get windowStr() {
+    const fmt = (m) => (m === 1440
+      ? '24:00'
+      : `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`);
+    return `${fmt(this.startMin)}-${fmt(this.endMin)}`;
+  }
+}
+
+export class ShiftSet {
+  constructor(shifts) { this.shifts = shifts; }
+
+  static parse(text) {
+    const out = [];
+    const seen = new Set();
+    const parts = String(text).split(',').map((p) => p.trim()).filter(Boolean);
+    if (!parts.length) throw new Error(`no shifts parsed from ${text}`);
+    for (const part of parts) {
+      const eq = part.indexOf('=');
+      if (eq <= 0) throw new Error(`shift must be name=HH:MM-HH:MM: ${part}`);
+      const name = part.slice(0, eq).trim();
+      const window = part.slice(eq + 1);
+      const dash = window.indexOf('-');
+      if (dash < 0) throw new Error(`shift window must be HH:MM-HH:MM: ${window}`);
+      const start = parseHhmm(window.slice(0, dash));
+      const end = parseHhmm(window.slice(dash + 1));
+      if (start === end) throw new Error(`shift ${name} has a zero-length window ${window}`);
+      if (seen.has(name)) throw new Error(`duplicate shift name ${name}`);
+      seen.add(name);
+      out.push(new Shift(name, start, end));
+    }
+    return new ShiftSet(out);
+  }
+
+  static fromSpec(spec) {
+    return ShiftSet.parse(spec.map((s) => `${s.name}=${s.start}-${s.end}`).join(','));
+  }
+
+  static default() {
+    return ShiftSet.parse('day=06:00-18:00,night=18:00-06:00');
+  }
+
+  coverageIssues() {
+    const cover = new Array(1440).fill(0);
+    for (const sh of this.shifts) {
+      for (let m = 0; m < 1440; m++) if (sh.containsMinute(m)) cover[m] += 1;
+    }
+    const gap = cover.filter((c) => c === 0).length;
+    const overlap = cover.filter((c) => c > 1).length;
+    const issues = [];
+    if (gap) {
+      issues.push(`${gap} minute(s)/day fall in NO shift window (gap); those `
+        + `records go to '${UNASSIGNED_SHIFT}'.`);
+    }
+    if (overlap) {
+      issues.push(`${overlap} minute(s)/day are covered by MORE THAN ONE shift `
+        + '(overlap); the first matching window wins.');
+    }
+    return issues;
+  }
+}
+
+/**
+ * Minute-of-day for epoch `ms` in the report timezone (UTC if tzName falsy).
+ * Uses Intl (same approach as tzutil.isoInZone) so it matches Python's
+ * datetime.astimezone(ZoneInfo(tz)) wall clock.
+ */
+export function localMinuteOfDay(ms, tzName) {
+  if (!tzName || String(tzName).toUpperCase() === 'UTC') {
+    const d = new Date(ms);
+    return d.getUTCHours() * 60 + d.getUTCMinutes();
+  }
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tzName, hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  const parts = {};
+  for (const p of fmt.formatToParts(new Date(ms))) parts[p.type] = p.value;
+  const hour = parts.hour === '24' ? 0 : parseInt(parts.hour, 10);
+  return hour * 60 + parseInt(parts.minute, 10);
+}
+
+function localDateStr(ms, tzName) {
+  if (!tzName || String(tzName).toUpperCase() === 'UTC') {
+    return new Date(ms).toISOString().slice(0, 10);
+  }
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tzName, year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const parts = {};
+  for (const p of fmt.formatToParts(new Date(ms))) parts[p.type] = p.value;
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+/**
+ * Group record indices by shift NAME, evaluated in tzName. Returns a plain
+ * object {name: [indices]}; every named shift key is present (possibly empty);
+ * unmatched records collect under UNASSIGNED_SHIFT (only when non-empty).
+ */
+export function aggregateShifts(source, spec, ss, opts = {}) {
+  const tzName = opts.tz ?? null;
+  const src = asColumnSource(source, spec);
+  const out = {};
+  for (const sh of ss.shifts) out[sh.name] = [];
+  for (let i = 0; i < src.length; i++) {
+    const mod = localMinuteOfDay(src.startMs(i), tzName);
+    let placed = false;
+    for (const sh of ss.shifts) {
+      if (sh.containsMinute(mod)) { out[sh.name].push(i); placed = true; break; }
+    }
+    if (!placed) {
+      (out[UNASSIGNED_SHIFT] ??= []).push(i);
+    }
+  }
+  return out;
+}
+
+/**
+ * Contiguous per-occurrence buckets: [{label, name, lo, hi}], time-ordered. A
+ * wrap-past-midnight occurrence stays one bucket, labeled by its start date.
+ */
+export function shiftOccurrences(source, spec, ss, opts = {}) {
+  const tzName = opts.tz ?? null;
+  const src = asColumnSource(source, spec);
+  const n = src.length;
+  if (n === 0) return [];
+  const nameAt = (i) => {
+    const mod = localMinuteOfDay(src.startMs(i), tzName);
+    for (const sh of ss.shifts) if (sh.containsMinute(mod)) return sh.name;
+    return UNASSIGNED_SHIFT;
+  };
+  const out = [];
+  let curName = nameAt(0);
+  let lo = 0;
+  for (let i = 1; i < n; i++) {
+    const nm = nameAt(i);
+    if (nm !== curName) {
+      out.push({ label: `${curName} ${localDateStr(src.startMs(lo), tzName)}`, name: curName, lo, hi: i });
+      curName = nm; lo = i;
+    }
+  }
+  out.push({ label: `${curName} ${localDateStr(src.startMs(lo), tzName)}`, name: curName, lo, hi: n });
+  return out;
+}
+
+/**
+ * The headline per-shift-name aggregate comparison. One row per named shift
+ * (plus unassigned if any). `events` are filed by the shift their tStartMs
+ * falls in. demandWindow is in MINUTES.
+ * @returns {Array<object>} rows mirroring python shift_comparison_rows
+ */
+export function shiftComparisonRows(source, spec, ss, opts = {}) {
+  const tzName = opts.tz ?? null;
+  const events = opts.events ?? [];
+  const demandMin = Math.max(1, Math.floor(opts.demandWindow ?? 15));
+  const src = asColumnSource(source, spec);
+  const byName = aggregateShifts(source, spec, ss, { tz: tzName });
+  const winByName = new Map(ss.shifts.map((sh) => [sh.name, sh]));
+
+  const evByName = {};
+  for (const nm of Object.keys(byName)) evByName[nm] = [];
+  for (const e of events) {
+    const mod = localMinuteOfDay(e.tStartMs, tzName);
+    let placed = false;
+    for (const sh of ss.shifts) {
+      if (sh.containsMinute(mod)) { (evByName[sh.name] ??= []).push(e); placed = true; break; }
+    }
+    if (!placed) (evByName[UNASSIGNED_SHIFT] ??= []).push(e);
+  }
+
+  const p = src.column('P_total_avg_W');
+  const pf = src.column('PF_total_avg');
+  const va = src.column('V_LN_a_avg_V');
+  const vb = src.column('V_LN_b_avg_V');
+  const vc = src.column('V_LN_c_avg_V');
+  const vthA = src.column('V_THD_pct_a_avg');
+  const vthB = src.column('V_THD_pct_b_avg');
+  const vthC = src.column('V_THD_pct_c_avg');
+
+  const rows = [];
+  for (const [name, idxs] of Object.entries(byName)) {
+    const sh = winByName.get(name);
+    const window = sh ? sh.windowStr : '—';
+    const evs = evByName[name] ?? [];
+
+    const pMom = new RunningMoments();
+    let pMin = Infinity; let pMax = -Infinity;
+    const pfMom = new RunningMoments();
+    const vMom = new RunningMoments();
+    const vSketch = new PercentileSketch(0.0, 400.0);
+    const vthdSketch = new PercentileSketch(0.0, 50.0);
+    const gatheredP = new Float64Array(idxs.length);
+    for (let k = 0; k < idxs.length; k++) {
+      const i = idxs[k];
+      const pv = p[i];
+      gatheredP[k] = Number.isFinite(pv) ? pv : 0.0;
+      if (Number.isFinite(pv)) { pMom.add(pv); pMin = Math.min(pMin, pv); pMax = Math.max(pMax, pv); }
+      const pfi = pf[i];
+      if (Number.isFinite(pfi)) pfMom.add(pfi);
+      for (const vv of [va[i], vb[i], vc[i]]) {
+        if (Number.isFinite(vv) && vv > 50.0) { vMom.add(vv); vSketch.add(vv); }
+      }
+      for (const tv of [vthA[i], vthB[i], vthC[i]]) {
+        if (Number.isFinite(tv)) vthdSketch.add(tv);
+      }
+    }
+
+    const pMean = pMom.n ? pMom.mean : 0.0;
+    const hours = pMom.n / 3600.0;
+    const kwh = (pMean / 1000.0) * hours;
+    const peakKw = peakRollingDemandKw(gatheredP, demandMin * 60);
+
+    let nOut = 0; let nDip = 0; let nSwell = 0; let outageSecs = 0.0;
+    for (const e of evs) {
+      if (e.kind === 'outage') { nOut += 1; outageSecs += (e.tEndMs - e.tStartMs) / 1000; }
+      else if (e.kind === 'dip') nDip += 1;
+      else if (e.kind === 'swell') nSwell += 1;
+    }
+    const q = (sk, qq) => { const v = sk.quantile(qq); return Number.isNaN(v) ? 0.0 : v; };
+
+    rows.push({
+      shift: name,
+      window,
+      records: idxs.length,
+      hours,
+      kWh: kwh,
+      P_total_avg_W: pMean,
+      P_total_min_W: pMin === Infinity ? 0.0 : pMin,
+      P_total_max_W: pMax === -Infinity ? 0.0 : pMax,
+      peak_demand_kW: peakKw,
+      peak_demand_window_secs: demandMin * 60,
+      PF_avg: pfMom.n ? pfMom.mean : 0.0,
+      V_LN_avg_V: vMom.n ? vMom.mean : 0.0,
+      V_LN_p5_V: q(vSketch, 0.05),
+      V_LN_p95_V: q(vSketch, 0.95),
+      V_THD_p95_pct: q(vthdSketch, 0.95),
+      n_outages: nOut,
+      n_dips: nDip,
+      n_swells: nSwell,
+      outage_minutes: outageSecs / 60.0,
+    });
+  }
+  return rows;
+}
+
+// Trailing rolling-mean peak over a 1-Hz power array, mirroring
+// demand_analysis(window_secs).peak_demand_kw on a gathered sub-store.
+function peakRollingDemandKw(pArr, windowSecs) {
+  const n = pArr.length;
+  const w = Math.max(1, Math.floor(windowSecs));
+  if (n === 0) return 0.0;
+  let running = 0.0;
+  let peak = -Infinity;
+  let any = false;
+  for (let i = 0; i < n; i++) {
+    running += pArr[i];
+    if (i >= w) running -= pArr[i - w];
+    if (i >= w - 1) {
+      const demand = running / w;
+      if (demand > peak) peak = demand;
+      any = true;
+    }
+  }
+  return any ? peak / 1000.0 : 0.0;
+}
