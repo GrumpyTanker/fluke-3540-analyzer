@@ -92,6 +92,32 @@ def test_parse_zero_length_window_rejected():
         ShiftSet.parse("x=06:00-06:00")
 
 
+def test_load_shifts_file(tmp_path):
+    from fluke_3540.shifts_file import load_shifts
+    p = tmp_path / "s.json"
+    p.write_text('{"shifts":[{"name":"day","start":"06:00","end":"18:00"},'
+                 '{"name":"night","start":"18:00","end":"06:00"}]}',
+                 encoding="utf-8")
+    ss = load_shifts(p)
+    assert [s.name for s in ss.shifts] == ["day", "night"]
+
+
+def test_load_shifts_file_bare_list(tmp_path):
+    from fluke_3540.shifts_file import load_shifts
+    p = tmp_path / "s.json"
+    p.write_text('[{"name":"A","start":"06:00","end":"18:00"}]', encoding="utf-8")
+    ss = load_shifts(p)
+    assert [s.name for s in ss.shifts] == ["A"]
+
+
+def test_load_shifts_file_bad(tmp_path):
+    from fluke_3540.shifts_file import load_shifts
+    p = tmp_path / "s.json"
+    p.write_text('{"nope": 1}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_shifts(p)
+
+
 def test_from_spec_dicts():
     ss = ShiftSet.from_spec([
         {"name": "day", "start": "06:00", "end": "18:00"},
