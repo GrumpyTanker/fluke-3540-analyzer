@@ -158,42 +158,100 @@ export function wholeSessionStats(source, spec, opts = {}) {
 // --- CT-reversal auto-detection (Feature C) --------------------------------
 //
 // Mirrors python analysis.detect_ct_reversal: a load wired with backwards iFlex
-// CTs reads as a persistent generator (P_total < 0). Flag when real power is
-// negative for a high fraction of NON-OUTAGE time.
+// CTs reads as a persistent generator (P_total < 0). For bimodal loads the
+// low-current standby sign is noise, so the decision is made on the dominant
+// high-current (ACTIVE) state — is real power negative when current is high?
+// The whole-session count fields are still reported for context / back-compat.
+
+// Default per-phase current (A) above which a record counts as "active" load.
+export const STANDBY_CURRENT_THRESHOLD_A = 50.0;
+
+// Mean of the three per-phase avg currents at record i (NaN-skipped).
+function meanPhaseCurrent(ia, ib, ic, i) {
+  let s = 0.0;
+  let k = 0;
+  for (const c of [ia[i], ib[i], ic[i]]) {
+    if (Number.isFinite(c)) { s += c; k += 1; }
+  }
+  return k ? s / k : 0.0;
+}
 
 export function detectCtReversal(source, spec, opts = {}) {
   const negFractionThreshold = opts.negFractionThreshold ?? 0.50;
   const outageVThreshold = opts.outageVThreshold ?? 50.0;
+  const activeThresholdA = opts.activeThresholdA ?? STANDBY_CURRENT_THRESHOLD_A;
   const src = asColumnSource(source, spec);
   const p = src.column('P_total_avg_W');
   const va = src.column('V_LN_a_avg_V');
   const vb = src.column('V_LN_b_avg_V');
   const vc = src.column('V_LN_c_avg_V');
+  const ia = src.column('I_a_avg_A');
+  const ib = src.column('I_b_avg_A');
+  const ic = src.column('I_c_avg_A');
   let nonOutage = 0;
   let negative = 0;
   let pSum = 0.0;
   let pCount = 0;
+  let active = 0;
+  let activeNegative = 0;
+  let activePSum = 0.0;
+  let activePCount = 0;
   for (let i = 0; i < src.length; i++) {
     if (va[i] > outageVThreshold && vb[i] > outageVThreshold && vc[i] > outageVThreshold) {
       nonOutage += 1;
       const pv = p[i];
-      if (Number.isFinite(pv)) { pSum += pv; pCount += 1; }
+      const finite = Number.isFinite(pv);
+      if (finite) { pSum += pv; pCount += 1; }
       if (pv < 0) negative += 1;  // NaN < 0 is false, so non-finite never counts
+      if (meanPhaseCurrent(ia, ib, ic, i) >= activeThresholdA) {
+        active += 1;
+        if (finite) { activePSum += pv; activePCount += 1; }
+        if (pv < 0) activeNegative += 1;
+      }
     }
   }
   const frac = nonOutage ? negative / nonOutage : 0.0;
   const meanP = pCount ? pSum / pCount : 0.0;
+  const activeFrac = active ? activeNegative / active : 0.0;
+  const activeMeanP = activePCount ? activePSum / activePCount : 0.0;
+  let basis;
+  let reversed;
+  if (active > 0) {
+    basis = 'active';
+    reversed = activeFrac >= negFractionThreshold;
+  } else {
+    basis = 'whole_session';
+    reversed = frac >= negFractionThreshold;
+  }
   return {
-    reversed: frac >= negFractionThreshold,
+    reversed,
     frac_negative: frac,
     non_outage_records: nonOutage,
     negative_records: negative,
     mean_p_w: meanP,
     threshold: negFractionThreshold,
+    basis,
+    active_threshold_a: activeThresholdA,
+    active_records: active,
+    active_negative_records: activeNegative,
+    active_frac_negative: activeFrac,
+    active_mean_p_w: activeMeanP,
   };
 }
 
 export function ctReversalNotice(result) {
+  if (result.basis === 'active') {
+    const pct = result.active_frac_negative * 100.0;
+    const meanKw = result.active_mean_p_w / 1000.0;
+    return (
+      'CT REVERSAL DETECTED — '
+      + `real power is negative for ${pct.toFixed(1)}% of ACTIVE (high-current, `
+      + `I >= ${result.active_threshold_a.toFixed(0)} A/phase) time `
+      + `(active mean P = ${meanKw.toFixed(1)} kW). A load should draw positive `
+      + 'real power when running: one or more iFlex CT probes are likely clipped '
+      + 'on backwards. Toggle "Reverse CTs" (all phases) to correct P/Q/PF/energy.'
+    );
+  }
   const pct = result.frac_negative * 100.0;
   return (
     'CT REVERSAL DETECTED — ' +
@@ -202,6 +260,141 @@ export function ctReversalNotice(result) {
     'positive real power: one or more iFlex CT probes are likely clipped on ' +
     'backwards. Toggle "Reverse CTs" (all phases) to correct P/Q/PF/energy.'
   );
+}
+
+// --- Load-state split (active vs standby, current-gated) -------------------
+// JS port of python analysis.classify_load_states / load_state_rows /
+// session_energy / active_state_pf. Classify by mean per-phase CURRENT, report
+// the two states separately, and surface three explicitly-labeled energy
+// figures (the standby real-power SIGN is unreliable at low current).
+
+export const LOAD_STATES = ['active', 'standby'];
+
+export function classifyLoadStates(source, spec, opts = {}) {
+  const thresholdA = opts.thresholdA ?? STANDBY_CURRENT_THRESHOLD_A;
+  const src = asColumnSource(source, spec);
+  const ia = src.column('I_a_avg_A');
+  const ib = src.column('I_b_avg_A');
+  const ic = src.column('I_c_avg_A');
+  const active = [];
+  const standby = [];
+  for (let i = 0; i < src.length; i++) {
+    if (meanPhaseCurrent(ia, ib, ic, i) >= thresholdA) active.push(i);
+    else standby.push(i);
+  }
+  return { active, standby };
+}
+
+function loadStateRow(name, src, idxs, totalRecords) {
+  const p = src.column('P_total_avg_W');
+  const pf = src.column('PF_total_avg');
+  const s = src.column('S_total_avg_VA');
+  const va = src.column('V_LN_a_avg_V');
+  const vb = src.column('V_LN_b_avg_V');
+  const vc = src.column('V_LN_c_avg_V');
+  const ia = src.column('I_a_avg_A');
+  const ib = src.column('I_b_avg_A');
+  const ic = src.column('I_c_avg_A');
+  const vthA = src.column('V_THD_pct_a_avg');
+  const vthB = src.column('V_THD_pct_b_avg');
+  const vthC = src.column('V_THD_pct_c_avg');
+
+  const pMom = new RunningMoments();
+  let pMin = Infinity; let pMax = -Infinity;
+  const pfMom = new RunningMoments();
+  const sMom = new RunningMoments();
+  const iMom = new RunningMoments();
+  const vMom = new RunningMoments();
+  const vthdSketch = new PercentileSketch(0.0, 50.0);
+  for (const i of idxs) {
+    const pv = p[i];
+    if (Number.isFinite(pv)) {
+      pMom.add(pv);
+      pMin = Math.min(pMin, pv); pMax = Math.max(pMax, pv);
+    }
+    const pfi = pf[i];
+    if (Number.isFinite(pfi)) pfMom.add(pfi);
+    const sv = s[i];
+    if (Number.isFinite(sv)) sMom.add(sv);
+    iMom.add(meanPhaseCurrent(ia, ib, ic, i));
+    for (const vv of [va[i], vb[i], vc[i]]) {
+      if (Number.isFinite(vv) && vv > 50.0) vMom.add(vv);
+    }
+    for (const tv of [vthA[i], vthB[i], vthC[i]]) {
+      if (Number.isFinite(tv)) vthdSketch.add(tv);
+    }
+  }
+  const pMean = pMom.n ? pMom.mean : 0.0;
+  const hours = pMom.n / 3600.0;
+  const kwh = (pMean / 1000.0) * hours;
+  const q = (sk, qq) => { const v = sk.quantile(qq); return Number.isNaN(v) ? 0.0 : v; };
+  return {
+    state: name,
+    records: idxs.length,
+    hours,
+    duty_pct: totalRecords ? (idxs.length / totalRecords) * 100.0 : 0.0,
+    kWh: kwh,
+    P_avg_kW: pMean / 1000.0,
+    P_min_kW: pMin === Infinity ? 0.0 : pMin / 1000.0,
+    P_max_kW: pMax === -Infinity ? 0.0 : pMax / 1000.0,
+    I_avg_A: iMom.n ? iMom.mean : 0.0,
+    S_avg_kVA: sMom.n ? sMom.mean / 1000.0 : 0.0,
+    PF_avg: pfMom.n ? pfMom.mean : 0.0,
+    V_LN_avg_V: vMom.n ? vMom.mean : 0.0,
+    V_THD_p95_pct: q(vthdSketch, 0.95),
+  };
+}
+
+export function loadStateRows(source, spec, opts = {}) {
+  const thresholdA = opts.thresholdA ?? STANDBY_CURRENT_THRESHOLD_A;
+  const src = asColumnSource(source, spec);
+  const groups = classifyLoadStates(source, spec, { thresholdA });
+  const total = src.length;
+  return LOAD_STATES.map((name) => loadStateRow(name, src, groups[name], total));
+}
+
+export function sessionEnergy(source, spec, opts = {}) {
+  const thresholdA = opts.thresholdA ?? STANDBY_CURRENT_THRESHOLD_A;
+  const src = asColumnSource(source, spec);
+  const p = src.column('P_total_avg_W');
+  const ia = src.column('I_a_avg_A');
+  const ib = src.column('I_b_avg_A');
+  const ic = src.column('I_c_avg_A');
+  const perKwh = 1.0 / 1000.0 / 3600.0;
+  let asMeasured = 0.0;
+  let active = 0.0;
+  let netClip = 0.0;
+  for (let i = 0; i < src.length; i++) {
+    const pv = p[i];
+    if (!Number.isFinite(pv)) continue;
+    const e = pv * perKwh;
+    asMeasured += e;
+    if (meanPhaseCurrent(ia, ib, ic, i) >= thresholdA) {
+      active += e;
+      netClip += e;
+    } else if (pv > 0) {
+      netClip += e;
+    }
+  }
+  return {
+    energy_as_measured_kWh: asMeasured,
+    energy_active_kWh: active,
+    energy_net_clip_standby_kWh: netClip,
+    standby_threshold_a: thresholdA,
+    note: (
+      'Standby real-power SIGN is unreliable at low current, so the '
+      + 'as-measured signed sum can understate consumption. energy_active '
+      + '(active records only) and energy_net_clip_standby (standby real '
+      + 'power clipped to >=0) are the defensible consumption figures.'
+    ),
+  };
+}
+
+export function activeStatePf(rows) {
+  for (const r of rows) {
+    if (r.state === 'active') return r.PF_avg;
+  }
+  return null;
 }
 
 // --- ITIC / CBEMA classification -------------------------------------------
@@ -697,6 +890,7 @@ export function shiftComparisonRows(source, spec, ss, opts = {}) {
   const tzName = opts.tz ?? null;
   const events = opts.events ?? [];
   const demandMin = Math.max(1, Math.floor(opts.demandWindow ?? 15));
+  const standbyThresholdA = opts.standbyThresholdA ?? STANDBY_CURRENT_THRESHOLD_A;
   const src = asColumnSource(source, spec);
   const byName = aggregateShifts(source, spec, ss, { tz: tzName });
   const winByName = new Map(ss.shifts.map((sh) => [sh.name, sh]));
@@ -717,6 +911,9 @@ export function shiftComparisonRows(source, spec, ss, opts = {}) {
   const va = src.column('V_LN_a_avg_V');
   const vb = src.column('V_LN_b_avg_V');
   const vc = src.column('V_LN_c_avg_V');
+  const ia = src.column('I_a_avg_A');
+  const ib = src.column('I_b_avg_A');
+  const ic = src.column('I_c_avg_A');
   const vthA = src.column('V_THD_pct_a_avg');
   const vthB = src.column('V_THD_pct_b_avg');
   const vthC = src.column('V_THD_pct_c_avg');
@@ -733,14 +930,26 @@ export function shiftComparisonRows(source, spec, ss, opts = {}) {
     const vMom = new RunningMoments();
     const vSketch = new PercentileSketch(0.0, 400.0);
     const vthdSketch = new PercentileSketch(0.0, 50.0);
+    // Active-state (high-current) sub-aggregates for the shift's own load split.
+    const actPMom = new RunningMoments();
+    const actPfMom = new RunningMoments();
+    let actRecords = 0;
     const gatheredP = new Float64Array(idxs.length);
     for (let k = 0; k < idxs.length; k++) {
       const i = idxs[k];
       const pv = p[i];
       gatheredP[k] = Number.isFinite(pv) ? pv : 0.0;
-      if (Number.isFinite(pv)) { pMom.add(pv); pMin = Math.min(pMin, pv); pMax = Math.max(pMax, pv); }
+      const isActive = meanPhaseCurrent(ia, ib, ic, i) >= standbyThresholdA;
+      if (isActive) actRecords += 1;
+      if (Number.isFinite(pv)) {
+        pMom.add(pv); pMin = Math.min(pMin, pv); pMax = Math.max(pMax, pv);
+        if (isActive) actPMom.add(pv);
+      }
       const pfi = pf[i];
-      if (Number.isFinite(pfi)) pfMom.add(pfi);
+      if (Number.isFinite(pfi)) {
+        pfMom.add(pfi);
+        if (isActive) actPfMom.add(pfi);
+      }
       for (const vv of [va[i], vb[i], vc[i]]) {
         if (Number.isFinite(vv) && vv > 50.0) { vMom.add(vv); vSketch.add(vv); }
       }
@@ -753,6 +962,11 @@ export function shiftComparisonRows(source, spec, ss, opts = {}) {
     const hours = pMom.n / 3600.0;
     const kwh = (pMean / 1000.0) * hours;
     const peakKw = peakRollingDemandKw(gatheredP, demandMin * 60);
+
+    const actPMean = actPMom.n ? actPMom.mean : 0.0;
+    const actHours = actPMom.n / 3600.0;
+    const actKwh = (actPMean / 1000.0) * actHours;
+    const actDutyPct = idxs.length ? (actRecords / idxs.length) * 100.0 : 0.0;
 
     let nOut = 0; let nDip = 0; let nSwell = 0; let outageSecs = 0.0;
     for (const e of evs) {
@@ -782,6 +996,10 @@ export function shiftComparisonRows(source, spec, ss, opts = {}) {
       n_dips: nDip,
       n_swells: nSwell,
       outage_minutes: outageSecs / 60.0,
+      active_records: actRecords,
+      active_duty_pct: actDutyPct,
+      active_kWh: actKwh,
+      active_PF_avg: actPfMom.n ? actPfMom.mean : 0.0,
     });
   }
   return rows;
