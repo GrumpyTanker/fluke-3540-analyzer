@@ -184,6 +184,8 @@ def write_xlsx(
     *, csv_per_second_path: Path | None = None,
     stats: Mapping | None = None,
     tod_rows=None,
+    narrative: str | None = None,
+    demand: Mapping | None = None,
 ) -> Path:
     """Build the chartable XLSX.
 
@@ -315,6 +317,10 @@ def write_xlsx(
     ws_sum["A1"] = "Fluke 3540 FC Session Summary"
     ws_sum["A1"].font = Font(size=16, bold=True)
     ws_sum.merge_cells("A1:C1")
+    if narrative:
+        ws_sum["A2"] = "Executive summary: " + narrative
+        ws_sum["A2"].alignment = Alignment(wrap_text=True, vertical="top")
+        ws_sum.merge_cells("A2:F2")
 
     cfg = config or {}
     total = summary["sec_import"] + summary["sec_export"] + summary["sec_idle"]
@@ -343,6 +349,16 @@ def write_xlsx(
         ("Peak export power (kW)",   f"{summary['p_peak_neg'] / 1000:,.2f}"),
         ("Peak current (A)",         f"{summary['i_peak']:.1f}"),
         ("", ""),
+    ])
+    if demand and demand.get("n_windows"):
+        wmin = demand["window_secs"] // 60
+        summary_rows.extend([
+            (f"Peak demand ({wmin}-min, kW)", f"{demand['peak_demand_kw']:,.2f}"),
+            ("Peak demand window end",        str(demand.get("peak_window_end") or "")),
+            ("Mean demand (kW)",              f"{demand['mean_demand_w'] / 1000:,.2f}"),
+            ("", ""),
+        ])
+    summary_rows.extend([
         ("Time importing",           f"{summary['sec_import']:,} s ({pct(summary['sec_import'])})"),
         ("Time exporting",           f"{summary['sec_export']:,} s ({pct(summary['sec_export'])})"),
         ("Time idle (|P|<10W)",      f"{summary['sec_idle']:,} s ({pct(summary['sec_idle'])})"),

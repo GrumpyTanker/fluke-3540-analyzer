@@ -1,6 +1,8 @@
 // Event detection — JS port of python/src/fluke_3540/events.py.
 // Mirrors the same thresholds, mask logic, and Event shape.
 
+import { asColumnSource } from './column_source.js';
+
 export const DEFAULT_RULES = Object.freeze({
   outage_v_threshold: 50.0,
   dip_pct_of_nominal: 0.90,
@@ -15,6 +17,49 @@ export const DEFAULT_RULES = Object.freeze({
 });
 
 const PHASES = ['a', 'b', 'c'];
+
+// Valid EventRules keys for --rules-file overrides (Feature I). Mirrors the
+// Python EventRules dataclass fields.
+const RULE_KEYS = new Set(Object.keys(DEFAULT_RULES));
+
+/**
+ * Resolve per-asset EventRules from a parsed rules-file object (JSON form),
+ * mirroring python rules_file.load_rules. Precedence: DEFAULT_RULES ->
+ * file.defaults -> file.assets[assetName] (or file.assets.default). A flat
+ * object with only rule keys is treated as defaults.
+ *
+ * @param {object} raw parsed rules object
+ * @param {string|null} assetName
+ * @returns {object} a rules object suitable for detectEvents({rules})
+ */
+export function rulesFromObject(raw, assetName = null) {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_RULES };
+  let defaults;
+  let assets;
+  if ('defaults' in raw || 'assets' in raw) {
+    defaults = raw.defaults || {};
+    assets = raw.assets || {};
+  } else {
+    defaults = raw;
+    assets = {};
+  }
+  const coerce = (over, where) => {
+    const out = {};
+    for (const [k, v] of Object.entries(over)) {
+      if (!RULE_KEYS.has(k)) {
+        throw new Error(`${where}: unknown EventRules key ${k}`);
+      }
+      out[k] = (k === 'min_duration_secs' || k === 'gap_tolerance_secs')
+        ? Math.trunc(Number(v)) : Number(v);
+    }
+    return out;
+  };
+  const merged = { ...DEFAULT_RULES, ...coerce(defaults, 'defaults') };
+  let assetOver = {};
+  if (assetName && assets[assetName]) assetOver = assets[assetName];
+  else if (assets.default) assetOver = assets.default;
+  return { ...merged, ...coerce(assetOver, 'assets') };
+}
 
 function fieldIndex(spec, name) {
   const f = spec.fields.find((f) => f.name === name);
@@ -84,32 +129,26 @@ function inferNominalLnV(vAvgByPhase, outageThreshold) {
 }
 
 /**
- * Detect events on an array of parsed Records.
- * @param {Array<{index:number, startMs:number, endMs:number, floats:Float32Array}>} records
+ * Detect events on an array of parsed Records OR a ColumnStore.
+ * @param {Array<{index:number, startMs:number, endMs:number, floats:Float32Array}>|import('./column_store.js').ColumnStore} source
  * @param {object} spec - parsed field_map.json
  * @param {{nominalLnV?: number, rules?: object}} [opts]
  * @returns {Array<Event>}
  */
-export function detectEvents(records, spec, opts = {}) {
+export function detectEvents(source, spec, opts = {}) {
   const rules = { ...DEFAULT_RULES, ...(opts.rules ?? {}) };
   let { nominalLnV = null } = opts;
-  if (records.length === 0) return [];
+  const src = asColumnSource(source, spec);
+  if (src.length === 0) return [];
 
-  const VLNmin = PHASES.map((ph) => fieldIndex(spec, `V_LN_${ph}_min_V`));
-  const VLNmax = PHASES.map((ph) => fieldIndex(spec, `V_LN_${ph}_max_V`));
-  const VLNavg = PHASES.map((ph) => fieldIndex(spec, `V_LN_${ph}_avg_V`));
-  const Imax = PHASES.map((ph) => fieldIndex(spec, `I_${ph}_max_A`));
-  const freqIdx = fieldIndex(spec, 'freq_avg_Hz');
-  const pIdx = fieldIndex(spec, 'P_total_avg_W');
-
-  const N = records.length;
-  // Extract columns once into typed arrays for speed.
-  const vMin = VLNmin.map((idx) => Float32Array.from(records, (r) => r.floats[idx]));
-  const vMax = VLNmax.map((idx) => Float32Array.from(records, (r) => r.floats[idx]));
-  const vAvg = VLNavg.map((idx) => Float32Array.from(records, (r) => r.floats[idx]));
-  const iMaxArr = Imax.map((idx) => Float32Array.from(records, (r) => r.floats[idx]));
-  const freqArr = Float32Array.from(records, (r) => r.floats[freqIdx]);
-  const pTotal = Float32Array.from(records, (r) => r.floats[pIdx]);
+  const N = src.length;
+  // Extract columns once into typed arrays for speed (no-copy for a store).
+  const vMin = PHASES.map((ph) => src.column(`V_LN_${ph}_min_V`));
+  const vMax = PHASES.map((ph) => src.column(`V_LN_${ph}_max_V`));
+  const vAvg = PHASES.map((ph) => src.column(`V_LN_${ph}_avg_V`));
+  const iMaxArr = PHASES.map((ph) => src.column(`I_${ph}_max_A`));
+  const freqArr = src.column('freq_avg_Hz');
+  const pTotal = src.column('P_total_avg_W');
 
   if (nominalLnV === null) {
     nominalLnV = inferNominalLnV(vAvg, rules.outage_v_threshold);
@@ -127,8 +166,8 @@ export function detectEvents(records, spec, opts = {}) {
   const outageMask = notOutage.map((b) => !b);
 
   const events = [];
-  const startMs = (i) => records[i].startMs;
-  const endMs = (i) => records[i].endMs;
+  const startMs = (i) => src.startMs(i);
+  const endMs = (i) => src.endMs(i);
 
   const phaseChars = (phaseList) => phaseList.slice();
 

@@ -185,6 +185,83 @@ def whole_session_stats(
     return out
 
 
+# --- CT-reversal auto-detection ---------------------------------------------
+#
+# A correctly-wired load draws real power: P_total > 0 essentially all the time.
+# When an iFlex CT is clipped on backwards, P/Q/PF/energy come out negated, so a
+# load reads as a persistent *generator* (P_total < 0). We flag a session when
+# real power is negative for a high fraction of NON-OUTAGE time — outage samples
+# (all phases collapsed) are excluded because P there is ~0/noise.
+
+def detect_ct_reversal(
+    store: ColumnStore,
+    neg_fraction_threshold: float = 0.50,
+    outage_v_threshold: float = 50.0,
+) -> dict:
+    """Detect a likely reversed-CT install from sustained negative real power.
+
+    Returns a dict:
+        {
+          "reversed": bool,            # True if neg fraction >= threshold
+          "frac_negative": float,      # fraction of non-outage records with P<0
+          "non_outage_records": int,
+          "negative_records": int,
+          "mean_p_w": float,           # mean P over finite non-outage records
+          "threshold": float,
+        }
+
+    A correctly-wired load draws positive real power essentially all the time,
+    so even a modestly-sustained negative-P fraction is a strong reversal signal;
+    the default 0.50 threshold (negative more often than positive) catches it
+    while staying clear of brief regen/export blips. Non-finite P samples are
+    skipped (the real meter occasionally emits NaN). ``reversed`` True means the
+    data looks like a load wired with backwards CTs — re-run with
+    ``--reverse-cts`` (or ``--auto-reverse-cts``) to correct it.
+    """
+    p = store.col("P_total_avg_W")
+    va = store.col("V_LN_a_avg_V")
+    vb = store.col("V_LN_b_avg_V")
+    vc = store.col("V_LN_c_avg_V")
+    n = store.n
+    non_outage = 0
+    negative = 0
+    p_sum = 0.0
+    p_count = 0
+    for i in range(n):
+        if va[i] > outage_v_threshold and vb[i] > outage_v_threshold and vc[i] > outage_v_threshold:
+            non_outage += 1
+            pv = p[i]
+            if pv == pv and pv not in (math.inf, -math.inf):  # finite
+                p_sum += pv
+                p_count += 1
+            if pv < 0:  # NaN < 0 is False, so non-finite never counts as negative
+                negative += 1
+    frac = (negative / non_outage) if non_outage else 0.0
+    mean_p = (p_sum / p_count) if p_count else 0.0
+    return {
+        "reversed": frac >= neg_fraction_threshold,
+        "frac_negative": frac,
+        "non_outage_records": non_outage,
+        "negative_records": negative,
+        "mean_p_w": mean_p,
+        "threshold": neg_fraction_threshold,
+    }
+
+
+def ct_reversal_notice(result: dict) -> str:
+    """A loud, explicit operator-facing notice for a flagged CT reversal."""
+    pct = result["frac_negative"] * 100.0
+    return (
+        "  !!  CT REVERSAL DETECTED  !!\n"
+        f"  Real power (P_total) is NEGATIVE for {pct:.1f}% of non-outage time "
+        f"(mean P = {result['mean_p_w'] / 1000:.1f} kW). A load should draw "
+        "positive real power — this signature means one or more iFlex CT probes "
+        "are clipped on backwards.\n"
+        "  Re-run with --reverse-cts to negate P/Q/PF/energy, or "
+        "--auto-reverse-cts to apply the correction automatically."
+    )
+
+
 # --- ITIC / CBEMA classification --------------------------------------------
 #
 # The ITIC (CBEMA) curve describes the voltage-deviation/duration envelope that
@@ -247,6 +324,168 @@ def classify_itic(residual_pct: float, duration_secs: float) -> str:
     if residual_pct < lower:
         return "no_damage"
     return "no_interruption"
+
+
+# --- IEEE 519 THD compliance + IEEE 1159 / SARFI indices --------------------
+#
+# IEEE 519-2014 voltage-distortion limits for systems <= 1 kV are 8.0% THD and
+# 5.0% any-single-harmonic; we report against the 5%/8% pair (assessed on the
+# 95th-percentile per-phase V_THD, which is how 519 evaluates compliance).
+# Current TDD limits depend on the short-circuit ratio Isc/IL which the meter
+# does not record, so I_THD is reported as the 95th-percentile per phase
+# (informational) without a hard pass/fail.
+
+# (limit_name, threshold_pct) voltage limits.
+IEEE519_V_THD_LIMIT_PCT = 8.0       # total voltage distortion limit (<=1 kV)
+IEEE519_V_THD_PLANNING_PCT = 5.0    # planning level / single-harmonic guidance
+
+
+def ieee519_compliance(store: ColumnStore) -> dict:
+    """IEEE 519 voltage-THD compliance per phase (assessed at p95).
+
+    Returns {"voltage": {phase: {p95, limit, planning, compliant}}, "current":
+    {phase: {p95}}, "limit_v_thd": 8.0, ...}. A phase is ``compliant`` when its
+    95th-percentile V_THD is at or under the 8% limit.
+    """
+    out: dict = {
+        "limit_v_thd_pct": IEEE519_V_THD_LIMIT_PCT,
+        "planning_v_thd_pct": IEEE519_V_THD_PLANNING_PCT,
+        "voltage": {},
+        "current": {},
+    }
+    all_compliant = True
+    for ph in ("a", "b", "c"):
+        vcol = store.col(f"V_THD_pct_{ph}_avg")
+        sk = _PercentileSketch(0.0, 100.0, nbins=2000)
+        for v in vcol:
+            sk.add(v)
+        p95 = sk.quantile(0.95) if sk.n else 0.0
+        compliant = p95 <= IEEE519_V_THD_LIMIT_PCT
+        all_compliant = all_compliant and compliant
+        out["voltage"][ph] = {
+            "p95": p95,
+            "limit": IEEE519_V_THD_LIMIT_PCT,
+            "planning": IEEE519_V_THD_PLANNING_PCT,
+            "compliant": compliant,
+            "exceeds_planning": p95 > IEEE519_V_THD_PLANNING_PCT,
+        }
+        icol = store.col(f"I_THD_pct_{ph}_avg")
+        ski = _PercentileSketch(0.0, 200.0, nbins=2000)
+        for v in icol:
+            ski.add(v)
+        out["current"][ph] = {"p95": ski.quantile(0.95) if ski.n else 0.0}
+    out["all_voltage_compliant"] = all_compliant
+    return out
+
+
+# SARFI magnitude bins (IEEE 1159 / IEEE 1564): residual-voltage thresholds.
+# SARFI-X counts events whose residual voltage dipped BELOW X% of nominal.
+SARFI_THRESHOLDS = (90, 80, 70, 50, 10)
+
+
+def sarfi_indices(events, nominal_ln_v: float) -> dict:
+    """System Average RMS Frequency Index per threshold (SARFI-X).
+
+    For a single monitoring point SARFI-X is simply the count of voltage events
+    (dips + outages) whose residual voltage fell below X% of nominal. Returns
+    {"SARFI-90": n, ..., "events_considered": m, "nominal_ln_v": v}.
+    """
+    counts = {f"SARFI-{x}": 0 for x in SARFI_THRESHOLDS}
+    considered = 0
+    for ev in events:
+        if ev.kind == "dip":
+            residual_pct = ev.severity * 100.0
+        elif ev.kind == "outage":
+            residual_pct = (ev.severity / nominal_ln_v * 100.0) if nominal_ln_v else 0.0
+        else:
+            continue
+        considered += 1
+        for x in SARFI_THRESHOLDS:
+            if residual_pct < x:
+                counts[f"SARFI-{x}"] += 1
+    counts["events_considered"] = considered
+    counts["nominal_ln_v"] = nominal_ln_v
+    return counts
+
+
+# --- Demand analysis (rolling peak demand) ----------------------------------
+#
+# Utilities bill demand on a sliding/block window average of real power (15 min
+# is the most common interval). We compute a trailing rolling mean of
+# P_total_avg_W over ``window_secs`` samples (1 sample = 1 s) and report the
+# peak rolling demand and when it occurred, plus an optional decimated series.
+
+def demand_analysis(
+    store: ColumnStore,
+    window_secs: int = 900,
+    series_step_secs: int = 0,
+) -> dict:
+    """Rolling-window peak real-power demand.
+
+    Args:
+        window_secs: rolling window length (default 900 = 15 min).
+        series_step_secs: if > 0, emit a decimated demand series sampled every
+            this many seconds; if 0, no series is returned (just the peak).
+
+    Returns {"window_secs", "peak_demand_w", "peak_demand_kw",
+    "peak_window_end", "peak_window_start", "mean_demand_w", "n_windows",
+    "series": [...]}. ``series`` entries are {"t": iso, "demand_w": float}.
+    Non-finite P samples are treated as 0 for the running sum.
+    """
+    p = store.col("P_total_avg_W")
+    n = store.n
+    w = max(1, int(window_secs))
+    out: dict = {
+        "window_secs": w,
+        "peak_demand_w": 0.0,
+        "peak_demand_kw": 0.0,
+        "peak_window_end": None,
+        "peak_window_start": None,
+        "mean_demand_w": 0.0,
+        "n_windows": 0,
+        "series": [],
+    }
+    if n == 0:
+        return out
+    # Trailing rolling sum.
+    running = 0.0
+    peak = -math.inf
+    peak_i = -1
+    demand_sum = 0.0
+    demand_count = 0
+    series: list[dict] = []
+    step = max(0, int(series_step_secs))
+    for i in range(n):
+        pv = p[i]
+        if pv != pv or pv in (math.inf, -math.inf):
+            pv = 0.0
+        running += pv
+        if i >= w:
+            old = p[i - w]
+            if old != old or old in (math.inf, -math.inf):
+                old = 0.0
+            running -= old
+        if i >= w - 1:  # a full window is available
+            demand = running / w
+            demand_sum += demand
+            demand_count += 1
+            if demand > peak:
+                peak = demand
+                peak_i = i
+            if step and ((i - (w - 1)) % step == 0):
+                series.append({
+                    "t": store.end(i).isoformat(),
+                    "demand_w": demand,
+                })
+    if peak_i >= 0:
+        out["peak_demand_w"] = peak
+        out["peak_demand_kw"] = peak / 1000.0
+        out["peak_window_end"] = store.end(peak_i).isoformat()
+        out["peak_window_start"] = store.start(peak_i - w + 1).isoformat()
+        out["mean_demand_w"] = demand_sum / demand_count if demand_count else 0.0
+        out["n_windows"] = demand_count
+    out["series"] = series
+    return out
 
 
 # --- Time-bucket partitioning (--split-by) ----------------------------------

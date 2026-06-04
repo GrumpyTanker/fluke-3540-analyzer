@@ -36,15 +36,20 @@ export function emptyCost(currency = 'USD') {
   };
 }
 
-export function computeCost(records, spec, tariff) {
+export function computeCost(source, spec, tariff) {
   if (!tariff) return emptyCost();
   const whIdx = fieldIndex(spec, 'Wh_total');
   if (whIdx < 0) return emptyCost(tariff.currency);
   let pkImp = 0, pkExp = 0, opImp = 0, opExp = 0;
-  for (const r of records) {
-    const wh = r.floats[whIdx];
+  // Accept a ColumnStore (Wh_total is a retained channel) or a records array.
+  const isStore = source && source.cols && source.startMs instanceof Float64Array;
+  const n = isStore ? source.n : source.length;
+  const whCol = isStore ? source.cols.Wh_total : null;
+  for (let i = 0; i < n; i++) {
+    const wh = isStore ? whCol[i] : source[i].floats[whIdx];
     if (!wh) continue;
-    const hour = new Date(r.startMs).getUTCHours();
+    const startMs = isStore ? source.startMs[i] : source[i].startMs;
+    const hour = new Date(startMs).getUTCHours();
     const peak = isPeak(tariff, hour);
     if (wh > 0) {
       if (peak) pkImp += wh; else opImp += wh;

@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-06-03
+
+Web parity + analysis depth. Closes the web memory/parity gap from 0.5.0 and
+adds six standards-grade analysis features, all parity-tested Python↔JS.
+
+### Added — web streaming + parity (Features A, B)
+- **Streaming columnar web parse** — `web/column_store.js` + `parseTrendColumnar`
+  / `parseTrendColumnarStream` decode `trend.bin` straight into packed
+  `Float32Array` columns, streamed from the dropped `File` in 8 MB
+  record-aligned `Blob.slice` chunks and **Transferred** back from the worker.
+  The 7-day file (589,877 recs / 438 MB) now parses + fully analyses at
+  **~278 MB peak RSS** vs the old ~1.6 GB. Analysis, charts, range select, and
+  tariff all read the resident store; exports materialise records transiently.
+  Legacy `parseTrendBin` retained for small-file / CSV paths.
+- **`web/analysis.js`** — JS port of `analysis.py` (Welford moments, percentile
+  sketch, `wholeSessionStats`, `classifyItic`/`eventItic`, `timeOfDayProfile`,
+  `correlateMarkers`). A Statistics panel + time-of-day chart in the web UI; the
+  stats table is embedded in the HTML export.
+- Fixed a latent `Math.max(...arr)` stack overflow in the insights engine that
+  would have crashed the web app on a ~590 K-element session.
+
+### Added — CT-reversal detection (Feature C)
+- **`--auto-reverse-cts`** — detects a reversed-CT install (real power negative
+  for ≥ 50 % of non-outage time) and applies `--reverse-cts` automatically with
+  a loud notice. A matching web banner + one-click apply. Flags the real ES.004
+  (52 % negative P, mean −37 kW). Python + JS.
+
+### Added — multi-session stitching (Feature D)
+- **`fluke-analyze stitch S1 S2 … -o OUT`** — concatenates consecutive sessions
+  into one continuous, gap-aware timeline with per-source provenance, then runs
+  the normal analysis over the stitched series (beats the meter's 7-day cap).
+  `web/multi_session.js` gains `stitchStores` + `buildStitched`. Validated on
+  ES.001 + ES.002 → 79,897 records with a detected 802 s gap.
+
+### Added — executive summary (Feature E)
+- **Auto-narrative** — deterministic, rule-based plain-English summary
+  (`narrative.md` + top of `summary.txt`, HTML, XLSX). Python + JS parity.
+
+### Added — power-quality standards (Feature F)
+- **IEEE 519** voltage-THD compliance per phase (p95 vs 8 %/5 %) and **IEEE 1159
+  / SARFI-90/80/70/50/10** indices, in stats + reports. `docs/PQ_STANDARDS.md`.
+
+### Added — demand + timezone + per-asset rules (Features G, H, I)
+- **`--demand-window`** rolling peak-demand (default 15 min) with peak window +
+  series, in stats/XLSX. Python + JS.
+- **`--tz ZONE`** renders report timestamps in local + UTC (default UTC
+  unchanged); anchors still accept ISO offsets. Python + JS.
+- **`--rules-file FILE`** (JSON/TOML) overrides `EventRules` thresholds keyed by
+  asset name (defaults + per-asset). `docs/RULES_FILE.md`. Python + JS.
+
+### Tests
+- Python 176 → 223; web 82 → 114. New Python↔JS golden-parity harness covers
+  stats, ITIC, CT reversal, narrative, IEEE 519/SARFI, demand, and timezone
+  formatting.
+
 ## [0.5.0] — 2026-06-02
 
 Large-session hardening — the tool now survives week-long captures

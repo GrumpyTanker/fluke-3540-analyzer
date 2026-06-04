@@ -175,14 +175,21 @@ export function decimateSeries(data, targetPoints = 4000) {
 }
 
 /**
- * Build uPlot data arrays from a set of records and a quantity definition.
- * Returns [xs, ...ySeries] suitable for uPlot's data prop.
+ * Build uPlot data arrays from records OR a ColumnStore and a quantity
+ * definition. Returns [xs, ...ySeries] suitable for uPlot's data prop.
+ *
+ * A ColumnStore is detected by duck-typing (.cols + .startMs typed array); its
+ * channels are read column-wise with no per-record allocation, so the chart
+ * path is memory-bounded on the 7-day file.
  */
-function buildPlotData(records, spec, quantityDef, startMs, endMs) {
+function buildPlotData(source, spec, quantityDef, startMs, endMs) {
+  if (source && source.cols && source.startMs instanceof Float64Array) {
+    return buildPlotDataFromStore(source, quantityDef, startMs, endMs);
+  }
   const fi = fieldIndexMap(spec);
   const xs = [];
   const ys = quantityDef.series.map(() => []);
-  for (const rec of records) {
+  for (const rec of source) {
     if (startMs !== null && rec.startMs < startMs) continue;
     if (endMs !== null && rec.startMs > endMs) continue;
     xs.push(rec.startMs / 1000);  // uPlot expects unix seconds
@@ -190,6 +197,29 @@ function buildPlotData(records, spec, quantityDef, startMs, endMs) {
       const idx = fi.get(quantityDef.series[k].name);
       ys[k].push(rec.floats[idx] * quantityDef.series[k].scale);
     }
+  }
+  return [xs, ...ys];
+}
+
+function buildPlotDataFromStore(store, quantityDef, startMs, endMs) {
+  const cols = quantityDef.series.map((s) => {
+    const c = store.cols[s.name];
+    if (!c) {
+      throw new Error(
+        `chart series ${s.name} not retained in the ColumnStore — ` +
+        'add it to STORE_COLUMNS or use the records path'
+      );
+    }
+    return [c, s.scale];
+  });
+  const xs = [];
+  const ys = quantityDef.series.map(() => []);
+  for (let i = 0; i < store.n; i++) {
+    const t = store.startMs[i];
+    if (startMs !== null && t < startMs) continue;
+    if (endMs !== null && t > endMs) continue;
+    xs.push(t / 1000);
+    for (let k = 0; k < cols.length; k++) ys[k].push(cols[k][0][i] * cols[k][1]);
   }
   return [xs, ...ys];
 }

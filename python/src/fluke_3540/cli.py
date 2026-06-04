@@ -130,6 +130,11 @@ def build_argparser() -> argparse.ArgumentParser:
                     help="Negate P/Q/PF/DPF/Wh/VARh for backwards iFlex CTs. "
                          "Bare flag = all phases; pass a comma list like 'a,c' to "
                          "only flip those phases (plus totals).")
+    ap.add_argument("--auto-reverse-cts", action="store_true",
+                    help="Auto-detect a reversed-CT install (sustained negative "
+                         "real power on a load) and apply --reverse-cts "
+                         "automatically, with a loud notice. No-op if the data "
+                         "already reads as a normal load.")
     ap.add_argument("--every", type=int, default=1, metavar="K",
                     help="Emit every K-th record into the CSV (default 1, all)")
     ap.add_argument("--max-csv-rows", type=int, default=None, metavar="N",
@@ -149,6 +154,12 @@ def build_argparser() -> argparse.ArgumentParser:
                              "exclusive with --anchor-start).")
 
     # Time-bucket splitting
+    # Timezone-aware reporting (Feature H)
+    ap.add_argument("--tz", dest="tz", type=str, default=None, metavar="ZONE",
+                    help="IANA timezone (e.g. America/Chicago) for report "
+                         "timestamps. Reports then show local + UTC. Default UTC "
+                         "only. Anchors already accept ISO offsets.")
+
     ap.add_argument("--split-by", dest="split_by", type=str, default=None,
                     metavar="PERIOD",
                     help="Partition the session into time buckets, emitting a full "
@@ -171,6 +182,10 @@ def build_argparser() -> argparse.ArgumentParser:
                          "24 h; pass a window like 08:00-17:00.")
     ap.add_argument("--tod-bin", dest="tod_bin", type=int, default=1, metavar="MINS",
                     help="Time-of-day bin width in minutes (default 1).")
+    ap.add_argument("--demand-window", dest="demand_window", type=int,
+                    default=900, metavar="SECS",
+                    help="Rolling demand window in seconds (default 900 = 15 min). "
+                         "Reports peak demand + the window it occurred in.")
 
     # Output knobs
     ap.add_argument("--no-xlsx", action="store_true", help="Skip XLSX report")
@@ -185,6 +200,11 @@ def build_argparser() -> argparse.ArgumentParser:
                     help="Chart image format (default png)")
     ap.add_argument("--nominal-ln-v", type=float, default=None, metavar="V",
                     help="Nominal L-N voltage (auto-inferred if omitted)")
+    ap.add_argument("--rules-file", dest="rules_file", type=Path, default=None,
+                    metavar="FILE",
+                    help="JSON/TOML file overriding EventRules thresholds, keyed "
+                         "by asset_id/name (see docs/RULES_FILE.md). Per-asset "
+                         "values win over the file's defaults.")
 
     return ap
 
@@ -272,7 +292,31 @@ def _parse_session(args: argparse.Namespace, outdir: Path,
     if st.bad_magic or st.truncated or st.nonfinite:
         print(f"        robustness: {st.bad_magic} bad-magic, "
               f"{st.truncated} truncated, {st.nonfinite} non-finite (skipped/flagged)")
-    return full_csv, min_csv, res["config"], res["store"]
+
+    # CT-reversal auto-detection (Feature C). Always check + notify; with
+    # --auto-reverse-cts (and no explicit --reverse-cts already applied) re-run
+    # the single-pass parse with the correction applied.
+    store = res["store"]
+    from .analysis import ct_reversal_notice, detect_ct_reversal
+    ct = detect_ct_reversal(store)
+    if ct["reversed"]:
+        print(ct_reversal_notice(ct))
+        already_reversed = bool(reverse_cts)
+        if getattr(args, "auto_reverse_cts", False) and not already_reversed:
+            print("[parse] --auto-reverse-cts: re-parsing with reverse-CTs applied…")
+            res = export_csv_multi(
+                session_dir, full_csv, min_csv,
+                every=args.every, reverse_cts=True,
+                max_full_rows=getattr(args, "max_csv_rows", None),
+                time_shift=time_shift, build_store=True,
+                log=print, progress_every=100_000,
+            )
+            store = res["store"]
+            ct_after = detect_ct_reversal(store)
+            print(f"        after auto-reverse: P now negative for "
+                  f"{ct_after['frac_negative'] * 100:.1f}% of non-outage time "
+                  f"(mean P = {ct_after['mean_p_w'] / 1000:.1f} kW)")
+    return full_csv, min_csv, res["config"], store
 
 
 def _store_from_csv(csv_path: Path) -> ColumnStore:
@@ -328,7 +372,10 @@ def _detect_and_save(args: argparse.Namespace, outdir: Path,
         before = store.n
         store = _window_filter_store(store, args.from_time, args.to_time)
         print(f"         window filter: {before:,} → {store.n:,} records")
-    events = detect_events(store, nominal_ln_v=args.nominal_ln_v)
+
+    # Per-asset threshold overrides (Feature I).
+    rules = _load_event_rules(args, config)
+    events = detect_events(store, nominal_ln_v=args.nominal_ln_v, rules=rules)
     snaps = pick_snapshots(store, events, n=args.snapshots)
     findings = analyze_insights(store, events, snaps, config or {})
     print(f"         {len(events)} events, {len(snaps)} snapshots, "
@@ -348,6 +395,28 @@ def _detect_and_save(args: argparse.Namespace, outdir: Path,
     ), encoding="utf-8")
     print(f"         wrote {events_path.name}, {snaps_path.name}, {insights_path.name}")
     return events, snaps, findings, store
+
+
+def _load_event_rules(args: argparse.Namespace, config: dict | None):
+    """Return EventRules, applying --rules-file overrides for this asset."""
+    from .events import DEFAULT_RULES
+    rules_path = getattr(args, "rules_file", None)
+    if not rules_path:
+        return DEFAULT_RULES
+    from .rules_file import describe_overrides, load_rules
+    asset = (config or {}).get("asset_name")
+    try:
+        rules = load_rules(rules_path, asset_name=asset)
+    except (OSError, ValueError) as e:
+        print(f"ERROR: --rules-file {rules_path}: {e}", file=sys.stderr)
+        raise SystemExit(2)
+    diffs = describe_overrides(rules_path, asset)
+    if diffs:
+        print(f"[rules] {rules_path} (asset={asset or 'n/a'}): "
+              + "; ".join(diffs))
+    else:
+        print(f"[rules] {rules_path}: no overrides applied")
+    return rules
 
 
 def _infer_nominal_ln_v(store: ColumnStore, fallback: float | None) -> float:
@@ -550,6 +619,34 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     # ITIC always augments events.json (cheap, high-value for the deliverable).
     _augment_events_itic(outdir, events, nominal_ln_v)
 
+    # CT-reversal status snapshot for reports/web (cheap; one pass).
+    from .analysis import detect_ct_reversal, ieee519_compliance, sarfi_indices
+    ct = detect_ct_reversal(store)
+    (outdir / "ct_reversal.json").write_text(json.dumps(ct, indent=2), encoding="utf-8")
+
+    # IEEE 519 (THD) + IEEE 1159 / SARFI power-quality (Feature F).
+    pq = {
+        "ieee519": ieee519_compliance(store),
+        "sarfi": sarfi_indices(events, nominal_ln_v),
+    }
+    (outdir / "pq_standards.json").write_text(json.dumps(pq, indent=2), encoding="utf-8")
+    v = pq["ieee519"]["voltage"]
+    print(f"[pq] IEEE 519 V_THD p95: a={v['a']['p95']:.1f}% b={v['b']['p95']:.1f}% "
+          f"c={v['c']['p95']:.1f}% (limit {pq['ieee519']['limit_v_thd_pct']:.0f}%) — "
+          f"{'COMPLIANT' if pq['ieee519']['all_voltage_compliant'] else 'NON-COMPLIANT'}; "
+          f"SARFI-90={pq['sarfi']['SARFI-90']}")
+
+    # Demand analysis (Feature G).
+    from .analysis import demand_analysis
+    demand_window = max(1, getattr(args, "demand_window", 900))
+    # Emit a series sampled at ~1/60 of the window so the JSON stays compact.
+    demand = demand_analysis(store, window_secs=demand_window,
+                             series_step_secs=max(1, demand_window // 1))
+    (outdir / "demand.json").write_text(json.dumps(demand, indent=2), encoding="utf-8")
+    if demand["n_windows"]:
+        print(f"[demand] peak {demand['peak_demand_kw']:.1f} kW over a "
+              f"{demand_window}s window ending {demand['peak_window_end']}")
+
     stats: dict = {}
     if not getattr(args, "no_stats", False):
         stats = _write_stats(outdir, store)
@@ -566,14 +663,49 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     if getattr(args, "split_by", None):
         _run_split_by(args, outdir, store, events, config, nominal_ln_v)
 
-    return stats, tod_rows
+    # Auto-narrative / executive summary (Feature E) — needs stats + ct.
+    narrative = _write_narrative(outdir, store, events, findings, stats, ct, config)
+
+    return stats, tod_rows, narrative, demand
+
+
+def _write_narrative(outdir: Path, store: ColumnStore, events, findings,
+                     stats: dict, ct: dict, config: dict) -> str:
+    """Build the executive summary, write narrative.md, return the prose."""
+    from .narrative import build_narrative, narrative_markdown
+    duration = None
+    if store.n:
+        duration = (store.last_end - store.first_start).total_seconds()
+    narrative = build_narrative(
+        events, findings, stats or None, ct, config=config,
+        total_records=store.n, duration_secs=duration,
+    )
+    (outdir / "narrative.md").write_text(
+        narrative_markdown(narrative, config), encoding="utf-8")
+    print("[narrative] wrote narrative.md")
+    return narrative
 
 
 def _write_summary_txt(outdir: Path, events: Sequence[Event],
                        snaps: Sequence[Snapshot],
                        findings: Sequence[Finding],
-                       config: dict) -> None:
+                       config: dict,
+                       narrative: str | None = None,
+                       tz=None, tz_name: str | None = None,
+                       store: "ColumnStore | None" = None) -> None:
     lines: list[str] = ["Fluke 3540 FC Session Summary", "=" * 32, ""]
+    if narrative:
+        lines.append("Executive Summary")
+        lines.append("-" * 17)
+        lines.append(narrative)
+        lines.append("")
+    # Time range (Feature H): local + UTC when --tz set, else UTC only.
+    if store is not None and store.n:
+        from .tzutil import format_local_utc, tz_label
+        lines.append(f"Time range ({tz_label(tz, tz_name)}):")
+        lines.append(f"  start  {format_local_utc(store.first_start, tz)}")
+        lines.append(f"  end    {format_local_utc(store.last_end, tz)}")
+        lines.append("")
     if config:
         if config.get("asset_name"):
             lines.append(f"Asset:       {config['asset_name']}")
@@ -624,7 +756,8 @@ def _parse_quantities(arg: str | None, default: Sequence[str],
 def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
                   min_csv: Path, events: Sequence[Event],
                   snaps: Sequence[Snapshot], config: dict,
-                  stats: dict | None = None, tod_rows=None) -> None:
+                  stats: dict | None = None, tod_rows=None,
+                  narrative: str | None = None, demand: dict | None = None) -> None:
     full_qtys = _parse_quantities(args.plot, DEFAULT_PLOTS, FULL_QUANTITIES.keys())
     # Subset of zoom quantities that overlap with the user's --plot selection.
     zoom_qtys = [q for q in DEFAULT_ZOOM_PLOTS if q in full_qtys] or DEFAULT_ZOOM_PLOTS
@@ -670,7 +803,8 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
         xlsx_path = outdir / "report.xlsx"
         print(f"[render] xlsx workbook → {xlsx_path}")
         write_xlsx(min_csv, xlsx_path, config=config, csv_per_second_path=full_csv,
-                   stats=stats, tod_rows=tod_rows)
+                   stats=stats, tod_rows=tod_rows, narrative=narrative,
+                   demand=demand)
 
     html_path = outdir / "report.html"
     if not args.no_html:
@@ -693,6 +827,7 @@ def _render_phase(args: argparse.Namespace, outdir: Path, full_csv: Path,
             summary_stats=_build_summary_stats(events, snaps),
             events=events, snapshots=snaps,
             findings=loaded_findings,
+            narrative=narrative,
         )
 
     if args.pdf:
@@ -774,6 +909,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if raw_argv and raw_argv[0] == "compare":
         from .cli_compare import compare_main
         return compare_main(raw_argv[1:])
+    if raw_argv and raw_argv[0] == "stitch":
+        from .cli_stitch import stitch_main
+        return stitch_main(raw_argv[1:])
 
     # Make console output UTF-8 safe on Windows (default cp1252 chokes on →, σ, etc.)
     for stream in (sys.stdout, sys.stderr):
@@ -794,6 +932,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         def print(*a, **kw):  # noqa: A001 — intentional shadow
             kw.setdefault("file", sys.stderr)
             _original_print(*a, **kw)
+
+    # Resolve --tz once (Feature H). Invalid zones fail fast.
+    from .tzutil import resolve_tz
+    try:
+        args._tz = resolve_tz(getattr(args, "tz", None))
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
 
     if not args.session_dir.exists():
         print(f"ERROR: {args.session_dir} does not exist", file=sys.stderr)
@@ -832,8 +978,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # Post-detection analysis features (markers, stats, tod, split) run on
         # the in-memory store + on-disk CSVs.
-        stats, tod_rows = _run_extra_analyses(
+        stats, tod_rows, narrative, demand = _run_extra_analyses(
             args, outdir, store, events, findings, config, full_csv, min_csv)
+        # Re-write summary.txt with the executive narrative + tz-aware time range.
+        _write_summary_txt(outdir, events, snaps, findings, config,
+                           narrative=narrative, tz=getattr(args, "_tz", None),
+                           tz_name=getattr(args, "tz", None), store=store)
 
         if getattr(args, "json_mode", False):
             _emit_json(events, snaps, findings, config)
@@ -852,7 +1002,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.plot = ",".join(picked_qtys)
 
         _render_phase(args, outdir, full_csv, min_csv, events, snaps, config,
-                      stats=stats, tod_rows=tod_rows)
+                      stats=stats, tod_rows=tod_rows, narrative=narrative,
+                      demand=demand)
         print(f"[done] {outdir}")
         return 0
 

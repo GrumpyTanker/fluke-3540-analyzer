@@ -1,11 +1,7 @@
 // Snapshot picking — port of python/src/fluke_3540/snapshots.py.
 // Picks quiet, non-event windows by rolling stdev of P_total.
 
-function fieldIndex(spec, name) {
-  const f = spec.fields.find((f) => f.name === name);
-  if (!f) throw new Error(`spec is missing field ${name}`);
-  return f.index;
-}
+import { asColumnSource } from './column_source.js';
 
 function pstdev(values, start, end) {
   if (end - start + 1 < 2) return 0;
@@ -26,18 +22,18 @@ function mean(values, start, end) {
 /**
  * Pick up to N snapshot windows that are quiet (low P_total stdev) and don't
  * overlap any detected event.
- * @param {Array<{startMs:number, endMs:number, floats:Float32Array}>} records
+ * @param {Array<{startMs:number, endMs:number, floats:Float32Array}>|import('./column_store.js').ColumnStore} source
  * @param {Array<{tStartMs:number, tEndMs:number}>} events
  * @param {object} spec
  * @param {{n?: number, windowSecs?: number, minSeparationSecs?: number}} [opts]
  */
-export function pickSnapshots(records, events, spec, opts = {}) {
+export function pickSnapshots(source, events, spec, opts = {}) {
   const { n = 3, windowSecs = 300, minSeparationSecs = 3600 } = opts;
-  if (records.length === 0) return [];
+  const src = asColumnSource(source, spec);
+  if (src.length === 0) return [];
 
-  const pIdx = fieldIndex(spec, 'P_total_avg_W');
-  const p = Float32Array.from(records, (r) => r.floats[pIdx]);
-  const N = p.length;
+  const p = src.column('P_total_avg_W');
+  const N = src.length;
 
   if (windowSecs <= 1 || windowSecs > N) return [];
 
@@ -51,8 +47,8 @@ export function pickSnapshots(records, events, spec, opts = {}) {
   const eventIntervals = events.map((ev) => [ev.tStartMs, ev.tEndMs]);
   function overlapsEvent(i) {
     if (rolling[i] === null) return true;
-    const winStart = records[i - windowSecs + 1].startMs;
-    const winEnd = records[i].endMs;
+    const winStart = src.startMs(i - windowSecs + 1);
+    const winEnd = src.endMs(i);
     for (const [es, ee] of eventIntervals) {
       if (!(winEnd < es || winStart > ee)) return true;
     }
@@ -70,8 +66,8 @@ export function pickSnapshots(records, events, spec, opts = {}) {
   const picked = [];
   const usedCenters = [];
   for (const [stdevVal, i] of candidates) {
-    const winStart = records[i - windowSecs + 1].startMs;
-    const winEnd = records[i].endMs;
+    const winStart = src.startMs(i - windowSecs + 1);
+    const winEnd = src.endMs(i);
     const center = (winStart + winEnd) / 2;
     let tooClose = false;
     for (const prev of usedCenters) {

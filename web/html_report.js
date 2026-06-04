@@ -1,3 +1,5 @@
+import { formatLocalUtc, tzLabel } from './tzutil.js';
+
 // Self-contained HTML report — mirrors the Python html_report.py output so
 // the artifact looks the same regardless of which side built it.
 //
@@ -195,7 +197,72 @@ function insightsHtml(findings) {
   return out.join('\n');
 }
 
-export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [] }) {
+// Whole-session statistics table (Feature B) from a wholeSessionStats() dict.
+function wholeStatsTableHtml(wholeStats) {
+  if (!wholeStats) return '';
+  const cols = ['min', 'p1', 'p5', 'median', 'mean', 'p95', 'p99', 'max', 'stdev'];
+  const head = ['Channel', 'Unit', ...cols].map((h) => `<th>${esc(h)}</th>`).join('');
+  const fmt = (v) => (Number.isFinite(v)
+    ? (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(2)) : '—');
+  const rows = [];
+  for (const [name, d] of Object.entries(wholeStats)) {
+    if (name.startsWith('_')) continue;
+    const cells = [esc(name), esc(d.unit), ...cols.map((c) => fmt(d[c]))]
+      .map((c) => `<td>${c}</td>`).join('');
+    rows.push(`<tr>${cells}</tr>`);
+  }
+  const th = wholeStats._thresholds || {};
+  const note =
+    `<p><small>Under-voltage (&lt;${th.undervoltage_v} V): ${th.sec_undervoltage} s ` +
+    `(${(th.pct_undervoltage ?? 0).toFixed(2)}%). Over-current (&gt;${th.overcurrent_a} A): ` +
+    `${th.sec_overcurrent} s (${(th.pct_overcurrent ?? 0).toFixed(2)}%).</small></p>`;
+  return `<h2>Statistics</h2><table><thead><tr>${head}</tr></thead>` +
+    `<tbody>${rows.join('')}</tbody></table>${note}`;
+}
+
+// IEEE 519 + SARFI power-quality block (Feature F).
+function pqHtml(pq) {
+  if (!pq) return '';
+  const v = pq.ieee519.voltage;
+  const s = pq.sarfi;
+  const verdict = pq.ieee519.all_voltage_compliant ? 'COMPLIANT' : 'NON-COMPLIANT';
+  return '<h2>Power quality (IEEE 519 / 1159)</h2>' +
+    `<p>IEEE 519 voltage THD p95 (limit ${pq.ieee519.limit_v_thd_pct.toFixed(0)}%): ` +
+    `A=${v.a.p95.toFixed(1)}%, B=${v.b.p95.toFixed(1)}%, C=${v.c.p95.toFixed(1)}% — ` +
+    `<strong>${verdict}</strong>.</p>` +
+    `<p>SARFI: 90=${s['SARFI-90']}, 80=${s['SARFI-80']}, 70=${s['SARFI-70']}, ` +
+    `50=${s['SARFI-50']}, 10=${s['SARFI-10']} (${s.events_considered} voltage events).</p>`;
+}
+
+// Peak-demand block (Feature G).
+function demandHtml(demand) {
+  if (!demand || !demand.n_windows) return '';
+  const wmin = Math.round(demand.window_secs / 60);
+  return `<h2>Demand</h2><p>Peak ${wmin}-min demand: ` +
+    `<strong>${demand.peak_demand_kw.toFixed(1)} kW</strong> ` +
+    `(window ending ${esc((demand.peak_window_end || '').slice(0, 19))}Z); ` +
+    `mean demand ${(demand.mean_demand_w / 1000).toFixed(1)} kW.</p>`;
+}
+
+// Time-range header in local + UTC (Feature H).
+function timeRangeHtml(records, tz) {
+  if (!records || !records.length) return '';
+  const t0 = records[0].startMs;
+  const t1 = records[records.length - 1].endMs;
+  let label = 'UTC';
+  let fmt = (ms) => new Date(ms).toISOString().replace(/\.000Z$/, 'Z').replace('Z', '+00:00');
+  if (tz && tz.toUpperCase() !== 'UTC') {
+    try {
+      formatLocalUtc(t0, tz);   // throws on an invalid zone -> fall back to UTC
+      label = tzLabel(tz);
+      fmt = (ms) => formatLocalUtc(ms, tz);
+    } catch (_) { /* fall back to UTC */ }
+  }
+  return `<p class='time-range'><strong>Time range (${esc(label)}):</strong> ` +
+    `${esc(fmt(t0))} → ${esc(fmt(t1))}</p>`;
+}
+
+export function buildReportHtml({ title, config, records, spec, events, snapshots, findings = [], wholeStats = null, narrative = null, pq = null, demand = null, tz = null }) {
   const energy = summarizeRecords(records, spec);
   const stats = {
     'Records (per-second)': records.length.toLocaleString(),
@@ -207,10 +274,18 @@ export function buildReportHtml({ title, config, records, spec, events, snapshot
     'Peak export (kW)': (energy.pNeg / 1000).toFixed(2),
   };
   const charts = collectChartArtifacts();
+  const narrativeHtml = narrative
+    ? `<section class="narrative"><h2>Executive summary</h2><p>${esc(narrative).replace(/\n/g, '<br>')}</p></section>`
+    : '';
   const body = [
     `<h1>${esc(title)}</h1>`,
+    narrativeHtml,
+    timeRangeHtml(records, tz),
     '<h2>Summary</h2>',
     summaryDlHtml(stats, config),
+    wholeStatsTableHtml(wholeStats),
+    pqHtml(pq),
+    demandHtml(demand),
     insightsHtml(findings),
     '<h2>Events</h2>',
     eventsTableHtml(events),

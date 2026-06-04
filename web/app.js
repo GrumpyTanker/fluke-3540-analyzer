@@ -1,7 +1,7 @@
 // Main orchestration: drop-zone handling, spec/file loading, worker dispatch,
 // summary rendering, event detection, chart UI, exports. Pure ESM, no framework.
 
-import { detectEvents } from './events.js';
+import { detectEvents, rulesFromObject } from './events.js';
 import { pickSnapshots } from './snapshots.js';
 import { FULL_QUANTITIES, ZOOM_QUANTITIES, renderChart } from './plots.js';
 import { buildXlsx, downloadBlob } from './xlsx_export.js';
@@ -12,6 +12,10 @@ import { downloadCompareHtmlReport, downloadHtmlReport } from './html_report.js'
 import { downloadPdfReport } from './pdf_export.js';
 import { clearCache, getCached, hashBuffer, putCached } from './cache.js';
 import { MultiSession } from './multi_session.js';
+import { ColumnStore } from './column_store.js';
+import { wholeSessionStats, timeOfDayProfile, detectCtReversal, ctReversalNotice, ieee519Compliance, sarfiIndices, demandAnalysis } from './analysis.js';
+import { buildNarrative } from './narrative.js';
+import { formatLocalUtc, tzLabel } from './tzutil.js';
 import {
   computeCost, loadTariff, normalizeTariff, parsePeakHoursString,
   peakHoursToString, saveTariff,
@@ -96,7 +100,9 @@ const ms = new MultiSession();
 let cachedSpec = null;
 let currentArrayBuffer = null;
 let currentConfig = null;     // parsed ES.NNN-config.json companion (or null)
-let currentRecords = null;    // full parsed Records array (kept in memory)
+let currentStore = null;      // ColumnStore (memory-bounded; analysis + charts)
+let currentRecords = null;    // record array — only for small/CSV paths or read-through
+let currentFile = null;       // the dropped File/Blob, kept for read-through export
 let currentRecordCount = 0;
 let currentTimeRangeMs = null;
 let currentEvents = [];       // detected events for currentRecords
@@ -220,9 +226,41 @@ async function parseFile(file) {
   hideError();
   els.summarySec.hidden = true;
   els.progressSec.hidden = false;
-  setProgress(0, file.size, 'reading file');
-  currentArrayBuffer = await file.arrayBuffer();
-  await parseBuffer();
+  currentFile = file;            // kept for read-through CSV/zoom export
+  currentArrayBuffer = null;     // streaming path never holds the whole buffer
+  await parseStreaming(file);
+}
+
+// Streaming columnar path (Feature A): hand the File to the worker, which reads
+// it in 8 MB record-aligned chunks and transfers back typed-array columns. The
+// full 438 MB ArrayBuffer is never resident on either thread.
+async function parseStreaming(file) {
+  hideError();
+  els.summarySec.hidden = true;
+  els.progressSec.hidden = false;
+  const spec = await getSpec();
+  const reverseCts = selectedReversePhases();
+
+  setProgress(0, 100, 'parsing (streaming)');
+  if (currentWorker) currentWorker.terminate();
+  currentWorker = new Worker(new URL('./parser_worker.js', import.meta.url),
+                             { type: 'module' });
+  currentWorker.onmessage = (event) => {
+    const msg = event.data;
+    if (msg.type === 'progress') {
+      setProgress(msg.done, msg.total,
+        `parsing record ${msg.done.toLocaleString()} / ${msg.total.toLocaleString()}`);
+    } else if (msg.type === 'done-columnar') {
+      const store = ColumnStore.fromTransfer(msg);
+      onParseDoneColumnar(store).catch(showError);
+    } else if (msg.type === 'error') {
+      showError(new Error(msg.message));
+    }
+  };
+  currentWorker.onerror = (event) => {
+    showError(new Error(`Worker error: ${event.message ?? 'unknown'}`));
+  };
+  currentWorker.postMessage({ type: 'parse-stream', spec, blob: file, reverseCts });
 }
 
 async function parseBuffer() {
@@ -297,6 +335,7 @@ function selectedReversePhases() {
 
 async function onParseDone(msg) {
   currentRecords = msg.records;
+  currentStore = null;          // legacy/CSV/small path keeps record objects
   currentRecordCount = msg.recordCount;
   currentFileHash = msg.fileHash ?? currentFileHash;
   if (msg.records.length > 0) {
@@ -316,7 +355,7 @@ async function onParseDone(msg) {
   await new Promise((r) => setTimeout(r, 0));  // let progress repaint
   try {
     const spec = await getSpec();
-    currentEvents = detectEvents(currentRecords, spec);
+    currentEvents = detectEvents(currentRecords, spec, resolveRules() ? { rules: resolveRules() } : {});
     currentSnapshots = pickSnapshots(currentRecords, currentEvents, spec, { n: 3 });
     currentFindings = analyzeInsights(currentRecords, currentEvents, spec,
                                       currentSnapshots, currentConfig,
@@ -336,6 +375,9 @@ async function onParseDone(msg) {
     renderEventsTable();
     renderSnapshotsList();
     renderQuantityGrid();
+    renderStatsPanel(spec);
+    renderNarrative(spec);
+    checkCtReversal(spec);
     renderSessionsBar();
     els.insightsSec.hidden = currentFindings.length === 0;
     els.sessionsSec.hidden = false;
@@ -358,6 +400,349 @@ async function onParseDone(msg) {
   } finally {
     els.progressSec.hidden = true;
   }
+}
+
+// Columnar parse-done: analysis + charts run on the ColumnStore (memory-bounded);
+// currentRecords stays null so the 7-day file never re-materialises 590 K objects.
+async function onParseDoneColumnar(store) {
+  currentStore = store;
+  currentRecords = null;
+  currentRecordCount = store.n;
+  if (store.n > 0) {
+    currentTimeRangeMs = [store.firstStartMs, store.lastEndMs];
+  } else {
+    currentTimeRangeMs = null;
+  }
+  els.progressSec.hidden = true;
+  renderSummary();
+  els.summarySec.hidden = false;
+
+  setProgress(0, 100, 'detecting events');
+  els.progressSec.hidden = false;
+  await new Promise((r) => setTimeout(r, 0));
+  try {
+    const spec = await getSpec();
+    currentEvents = detectEvents(currentStore, spec, resolveRules() ? { rules: resolveRules() } : {});
+    currentSnapshots = pickSnapshots(currentStore, currentEvents, spec, { n: 3 });
+    currentFindings = analyzeInsights(currentStore, currentEvents, spec,
+                                      currentSnapshots, currentConfig,
+                                      { breakerRatingA: loadBreakerRating() });
+    ms.add({
+      records: null, store: currentStore,
+      events: currentEvents, snapshots: currentSnapshots,
+      findings: currentFindings, config: currentConfig,
+      fileHash: currentFileHash, file: currentFile,
+    });
+    renderInsights();
+    renderEventsTable();
+    renderSnapshotsList();
+    renderQuantityGrid();
+    renderStatsPanel(spec);
+    renderNarrative(spec);
+    checkCtReversal(spec);
+    renderSessionsBar();
+    els.insightsSec.hidden = currentFindings.length === 0;
+    els.sessionsSec.hidden = false;
+    els.eventsSec.hidden = false;
+    els.snapshotsSec.hidden = currentSnapshots.length === 0;
+    els.controlsSec.hidden = false;
+    els.exportSec.hidden = false;
+    els.rangeSec.hidden = false;
+    els.tariffSec.hidden = false;
+    setupRangeSelector(spec);
+    loadTariffIntoForm();
+    renderTariffResult();
+    tabState.hasSession = true;
+    updateTabUnlocks();
+    if (tabState.current === 'import') activateTab('explore');
+  } catch (e) {
+    showError(e);
+    return;
+  } finally {
+    els.progressSec.hidden = true;
+  }
+}
+
+// The data source the analysis / chart / range engines should read: the store
+// when present (streaming path), else the records array (small / CSV path).
+function dataSource() {
+  return currentStore || currentRecords;
+}
+
+// Per-asset EventRules from a loaded rules-file (Feature I), or undefined for
+// the built-in defaults.
+function resolveRules() {
+  if (!currentRulesRaw) return undefined;
+  try {
+    return rulesFromObject(currentRulesRaw, currentConfig?.asset_name ?? null);
+  } catch (e) {
+    showError(e);
+    return undefined;
+  }
+}
+
+// Re-run detection with the current rules and refresh the dependent UI. Used
+// after loading/clearing a rules-file.
+async function redetect() {
+  const src = dataSource();
+  if (!src) return;
+  const spec = await getSpec();
+  const rules = resolveRules();
+  currentEvents = detectEvents(src, spec, rules ? { rules } : {});
+  currentSnapshots = pickSnapshots(src, currentEvents, spec, { n: 3 });
+  currentFindings = analyzeInsights(src, currentEvents, spec, currentSnapshots,
+                                    currentConfig, { breakerRatingA: loadBreakerRating() });
+  renderInsights();
+  renderEventsTable();
+  renderSnapshotsList();
+  renderStatsPanel(spec);
+  renderNarrative(spec);
+  els.insightsSec.hidden = currentFindings.length === 0;
+}
+
+// Per-session column accessor for compare-overlay charts: reads from a
+// session's ColumnStore when present, else its records array. Only the few
+// channels FULL_QUANTITIES references (all retained) are needed here.
+function sessionAccessor(session, spec, name) {
+  if (session.store) {
+    const col = session.store.cols[name];
+    const n = session.store.n;
+    return {
+      n,
+      startMs: (i) => session.store.startMs[i],
+      value: (i) => (col ? col[i] : 0),
+      base: n ? session.store.startMs[0] : 0,
+    };
+  }
+  const recs = session.records || [];
+  const fi = new Map(spec.fields.map((f) => [f.name, f.index]));
+  const idx = fi.get(name);
+  return {
+    n: recs.length,
+    startMs: (i) => recs[i].startMs,
+    value: (i) => recs[i].floats[idx],
+    base: recs.length ? recs[0].startMs : 0,
+  };
+}
+
+// Materialise a records array for an export that genuinely needs every field
+// (CSV / XLSX / bundle). For the store path this is a transient allocation that
+// is dropped when the export finishes — it is NOT kept resident.
+function recordsForExport(spec) {
+  if (currentRecords) return currentRecords;
+  if (currentStore) return currentStore.toRecords(spec);
+  return [];
+}
+
+// Statistics panel (Feature B) — whole-session stats table + time-of-day chart,
+// computed straight off the resident ColumnStore so the CLI and web agree.
+let currentStats = null;       // last computed whole_session_stats (for exports)
+let currentTodRows = null;     // last computed time-of-day profile (for exports)
+let currentNarrative = null;   // executive-summary narrative (Feature E)
+let currentPq = null;          // IEEE 519 + SARFI power-quality (Feature F)
+let currentDemand = null;      // rolling peak-demand analysis (Feature G)
+let currentTz = null;          // report timezone (IANA) or null = UTC (Feature H)
+let currentRulesRaw = null;    // parsed --rules-file object (Feature I)
+
+const TZ_STORAGE_KEY = 'fluke3540.tz';
+
+// Render the tz-aware time range under the summary (local + UTC, or UTC only).
+function renderTzRange() {
+  const span = document.getElementById('tz-range');
+  if (!span || !currentTimeRangeMs) { if (span) span.textContent = ''; return; }
+  let valid = currentTz;
+  if (valid) {
+    // Validate the zone; fall back to UTC on a bad name.
+    try { formatLocalUtc(currentTimeRangeMs[0], valid); } catch (_) { valid = null; }
+  }
+  const [t0, t1] = currentTimeRangeMs;
+  span.textContent =
+    ` ${tzLabel(valid)} — start ${formatLocalUtc(t0, valid)}; end ${formatLocalUtc(t1, valid)}`;
+}
+
+// Median non-outage L-N voltage for SARFI residual %, from the stats sketch
+// (falls back to 277 V if voltage stats are unavailable).
+function inferNominalForPq(src) {
+  if (currentStats && currentStats.V_LN_a_avg_V) {
+    const m = currentStats.V_LN_a_avg_V.median;
+    if (Number.isFinite(m) && m > 50) return m;
+  }
+  return 277.0;
+}
+
+// CT-reversal banner (Feature C): warn when real power is sustained-negative on
+// a load and reverse-CTs isn't already applied. The Apply button ticks all
+// phase boxes and re-parses (which negates P/Q/PF/energy).
+function checkCtReversal(spec) {
+  const banner = document.getElementById('ct-reversal-banner');
+  const msg = document.getElementById('ct-reversal-msg');
+  if (!banner) return;
+  const src = dataSource();
+  const reverseOn = selectedReversePhases() !== false;
+  if (!src || reverseOn) { banner.hidden = true; return; }
+  let res;
+  try { res = detectCtReversal(src, spec); } catch (_) { banner.hidden = true; return; }
+  if (!res.reversed) { banner.hidden = true; return; }
+  if (msg) msg.textContent = ' ' + ctReversalNotice(res);
+  banner.hidden = false;
+}
+
+// Executive summary (Feature E) — built from events + insights + stats + ct.
+function renderNarrative(spec) {
+  const sec = document.getElementById('narrative-section');
+  const el = document.getElementById('narrative-text');
+  if (!sec || !el) return;
+  const src = dataSource();
+  if (!src) { sec.hidden = true; return; }
+  let ct = null;
+  try { ct = detectCtReversal(src, spec); } catch (_) { /* ignore */ }
+  const durationSecs = currentTimeRangeMs
+    ? (currentTimeRangeMs[1] - currentTimeRangeMs[0]) / 1000 : null;
+  currentNarrative = buildNarrative(currentEvents, currentFindings, currentStats, ct, {
+    config: currentConfig, totalRecords: currentRecordCount, durationSecs,
+  });
+  el.textContent = currentNarrative;
+  sec.hidden = false;
+}
+
+function renderStatsPanel(spec) {
+  const sec = document.getElementById('stats-section');
+  const wrap = document.getElementById('stats-table-wrap');
+  const status = document.getElementById('stats-status');
+  if (!sec || !wrap) return;
+  const src = dataSource();
+  if (!src) { sec.hidden = true; return; }
+  try {
+    currentStats = wholeSessionStats(src, spec);
+    currentTodRows = timeOfDayProfile(src, spec, { window: [0, 1440], binMinutes: 1 });
+  } catch (e) {
+    console.warn('stats failed:', e);
+    sec.hidden = true;
+    return;
+  }
+  sec.hidden = false;
+
+  // Stats table.
+  const table = document.createElement('table');
+  table.className = 'stats-table';
+  const thead = document.createElement('thead');
+  const hr = document.createElement('tr');
+  for (const h of ['Channel', 'Unit', 'Min', 'p1', 'p5', 'Median', 'Mean', 'p95', 'p99', 'Max', 'Stdev']) {
+    const th = document.createElement('th');
+    th.textContent = h;
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  const fmt = (v) => (Number.isFinite(v) ? (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(2)) : '—');
+  for (const [name, d] of Object.entries(currentStats)) {
+    if (name.startsWith('_')) continue;
+    const tr = document.createElement('tr');
+    const cells = [name, d.unit, fmt(d.min), fmt(d.p1), fmt(d.p5), fmt(d.median),
+                   fmt(d.mean), fmt(d.p95), fmt(d.p99), fmt(d.max), fmt(d.stdev)];
+    for (const c of cells) {
+      const td = document.createElement('td');
+      td.textContent = c;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+
+  const th = currentStats._thresholds || {};
+  const note = document.createElement('p');
+  note.className = 'stats-thresholds';
+  const us = document.createElement('small');
+  us.textContent =
+    `Under-voltage (<${th.undervoltage_v} V, any phase, non-outage): ` +
+    `${th.sec_undervoltage} s (${(th.pct_undervoltage ?? 0).toFixed(2)}%). ` +
+    `Over-current (>${th.overcurrent_a} A, any phase): ` +
+    `${th.sec_overcurrent} s (${(th.pct_overcurrent ?? 0).toFixed(2)}%).`;
+  note.appendChild(us);
+
+  // IEEE 519 + SARFI power-quality summary (Feature F).
+  currentPq = null;
+  const pqP = document.createElement('p');
+  pqP.className = 'stats-pq';
+  try {
+    const ieee = ieee519Compliance(src, spec);
+    const sarfi = sarfiIndices(currentEvents, inferNominalForPq(src));
+    currentPq = { ieee519: ieee, sarfi };
+    const vv = ieee.voltage;
+    const pqs = document.createElement('small');
+    pqs.textContent =
+      `IEEE 519 V_THD p95 (limit ${ieee.limit_v_thd_pct.toFixed(0)}%): ` +
+      `a=${vv.a.p95.toFixed(1)}% b=${vv.b.p95.toFixed(1)}% c=${vv.c.p95.toFixed(1)}% — ` +
+      `${ieee.all_voltage_compliant ? 'COMPLIANT' : 'NON-COMPLIANT'}. ` +
+      `SARFI-90=${sarfi['SARFI-90']}, SARFI-70=${sarfi['SARFI-70']}, ` +
+      `SARFI-10=${sarfi['SARFI-10']} (${sarfi.events_considered} voltage events).`;
+    pqP.appendChild(pqs);
+  } catch (_) { /* THD columns may be absent on some inputs */ }
+
+  // Rolling peak-demand (Feature G), 15-min window.
+  currentDemand = null;
+  const demP = document.createElement('p');
+  demP.className = 'stats-demand';
+  try {
+    currentDemand = demandAnalysis(src, spec, { windowSecs: 900 });
+    const ds = document.createElement('small');
+    if (currentDemand.n_windows) {
+      ds.textContent =
+        `Peak 15-min demand: ${currentDemand.peak_demand_kw.toFixed(1)} kW ` +
+        `(window ending ${new Date(currentDemand.peak_window_end).toISOString().slice(0, 19)}Z); ` +
+        `mean demand ${(currentDemand.mean_demand_w / 1000).toFixed(1)} kW.`;
+    } else {
+      ds.textContent = 'Peak demand: session shorter than the 15-min window.';
+    }
+    demP.appendChild(ds);
+  } catch (_) { /* ignore */ }
+
+  wrap.replaceChildren(table, note, pqP, demP);
+  if (status) status.firstChild
+    ? (status.firstChild.textContent = `${Object.keys(currentStats).length - 1} channels over ${(th.total_records || 0).toLocaleString()} records.`)
+    : (status.textContent = '');
+
+  renderTodChart();
+}
+
+function renderTodChart() {
+  const head = document.getElementById('tod-heading');
+  const div = document.getElementById('tod-chart');
+  const uPlot = window.uPlot;
+  if (!div) return;
+  div.replaceChildren();
+  if (!uPlot || !currentTodRows || currentTodRows.length === 0) {
+    if (head) head.hidden = true;
+    return;
+  }
+  if (head) head.hidden = false;
+  // x = minute-of-day index; series = P avg (kW), V avg (V), I avg (A).
+  const xs = currentTodRows.map((_, i) => i);
+  const pAvg = currentTodRows.map((r) => r.p_avg_kW);
+  const vAvg = currentTodRows.map((r) => r.v_avg_V);
+  const iAvg = currentTodRows.map((r) => r.i_avg_A);
+  const plot = new uPlot({
+    width: div.clientWidth || 900,
+    height: 240,
+    series: [
+      { label: 'bin' },
+      { label: 'P avg (kW)', stroke: '#cc0000', width: 1.4 },
+      { label: 'V avg (V)', stroke: '#0066cc', width: 1, scale: 'v' },
+      { label: 'I avg (A)', stroke: '#009933', width: 1, scale: 'i' },
+    ],
+    scales: { x: { time: false } },
+    axes: [
+      { stroke: '#666', label: 'time-of-day bin' },
+      { stroke: '#666', label: 'P (kW)' },
+      { stroke: '#666', scale: 'v', side: 1, label: 'V' },
+    ],
+    legend: { live: true },
+  }, [xs, pAvg, vAvg, iAvg], div);
+  const resizeObs = new ResizeObserver(() => {
+    plot.setSize({ width: div.clientWidth, height: 240 });
+  });
+  resizeObs.observe(div);
 }
 
 // --- Summary rendering ------------------------------------------------------
@@ -406,6 +791,7 @@ function renderSummary() {
   els.summaryGrid.replaceWith(dl);
   dl.id = 'summary-grid';
   els.summaryGrid = dl;
+  renderTzRange();
 }
 
 // --- UI plumbing ------------------------------------------------------------
@@ -434,6 +820,8 @@ function resetUi() {
   els.progressSec.hidden = true;
   els.sessionsSec.hidden = true;
   els.insightsSec.hidden = true;
+  { const s = document.getElementById('stats-section'); if (s) s.hidden = true; }
+  { const s = document.getElementById('narrative-section'); if (s) s.hidden = true; }
   els.eventsSec.hidden = true;
   els.snapshotsSec.hidden = true;
   els.controlsSec.hidden = true;
@@ -493,11 +881,11 @@ function getTariffFromForm() {
 
 async function renderTariffResult() {
   els.tariffResult.replaceChildren();
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const t = getTariffFromForm();
   if (t.peakRate === 0 && t.offpeakRate === 0) return;
   const spec = await getSpec();
-  const cost = computeCost(currentRecords, spec, t);
+  const cost = computeCost(dataSource(), spec, t);
   const fmt = (n) => `${t.currency} ${n.toFixed(2)}`;
   const fmtKwh = (n) => `${n.toFixed(2)} kWh`;
   const dl = document.createElement('dl');
@@ -573,16 +961,28 @@ function switchToSession(label) {
   if (!ms.setActive(label)) return;
   const s = ms.getActive();
   if (!s) return;
-  currentRecords = s.records;
-  currentRecordCount = s.records.length;
+  currentRecords = s.records || null;
+  currentStore = s.store || null;
+  currentFile = s.file || null;
   currentEvents = s.events;
   currentSnapshots = s.snapshots;
   currentFindings = s.findings;
   currentConfig = s.config;
   currentArrayBuffer = null;  // can't re-parse a switched-to session
-  currentTimeRangeMs = s.records.length
-    ? [s.records[0].startMs, s.records[s.records.length - 1].endMs]
-    : null;
+  const ds = currentStore || currentRecords;
+  if (currentStore) {
+    currentRecordCount = currentStore.n;
+    currentTimeRangeMs = currentStore.n
+      ? [currentStore.firstStartMs, currentStore.lastEndMs] : null;
+  } else if (currentRecords) {
+    currentRecordCount = currentRecords.length;
+    currentTimeRangeMs = currentRecords.length
+      ? [currentRecords[0].startMs, currentRecords[currentRecords.length - 1].endMs]
+      : null;
+  } else {
+    currentRecordCount = 0;
+    currentTimeRangeMs = null;
+  }
   renderSummary();
   renderInsights();
   renderEventsTable();
@@ -593,7 +993,7 @@ function switchToSession(label) {
 function setupRangeSelector(spec) {
   if (rangeSelector) rangeSelector.destroy();
   rangeSelector = renderRangeSelector(
-    els.rangeContainer, currentRecords, spec, (range) => {
+    els.rangeContainer, dataSource(), spec, (range) => {
       currentRange = range;
       const hash = rangeToHash(range);
       if (hash) history.replaceState(null, '', hash);
@@ -675,9 +1075,9 @@ function scrollToEvent(eventId) {
 }
 
 async function exportXlsx() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
-  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const scoped = scopeRecordsToRange(recordsForExport(spec), currentRange);
   const blob = buildXlsx({ records: scoped, spec, config: currentConfig });
   const name = (currentConfig?.asset_name ?? 'fluke_session').replace(/[^a-zA-Z0-9._-]+/g, '_');
   const suffix = currentRange ? '_range' : '';
@@ -685,9 +1085,9 @@ async function exportXlsx() {
 }
 
 async function exportBundle() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
-  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const scoped = scopeRecordsToRange(recordsForExport(spec), currentRange);
   const xlsxBlob = buildXlsx({ records: scoped, spec, config: currentConfig });
   await downloadBundleZip({
     records: scoped, spec, xlsxBlob,
@@ -696,9 +1096,9 @@ async function exportBundle() {
 }
 
 async function exportPdf() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
-  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const scoped = scopeRecordsToRange(recordsForExport(spec), currentRange);
   const scopedEvents = currentRange
     ? currentEvents.filter((e) =>
         !(e.tEndMs < currentRange.startMs || e.tStartMs > currentRange.endMs))
@@ -715,7 +1115,7 @@ async function exportPdf() {
 }
 
 async function exportHtmlReport() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
   if (ms.compareMode && ms.canCompare()) {
     // Compare-mode HTML uses the per-session summary + cross-session findings.
@@ -727,7 +1127,7 @@ async function exportHtmlReport() {
     });
     return;
   }
-  const scoped = scopeRecordsToRange(currentRecords, currentRange);
+  const scoped = scopeRecordsToRange(recordsForExport(spec), currentRange);
   // When scoping, also scope events/findings to overlap the range.
   const scopedEvents = currentRange
     ? currentEvents.filter((e) =>
@@ -742,6 +1142,11 @@ async function exportHtmlReport() {
     title, config: currentConfig, records: scoped, spec,
     events: scopedEvents, snapshots: currentSnapshots,
     findings: scopedFindings,
+    wholeStats: currentRange ? null : currentStats,
+    narrative: currentRange ? null : currentNarrative,
+    pq: currentRange ? null : currentPq,
+    demand: currentRange ? null : currentDemand,
+    tz: currentTz,
   });
 }
 
@@ -998,7 +1403,7 @@ function selectedSnapshotIds() {
 }
 
 async function renderAll() {
-  if (!currentRecords) return;
+  if (!dataSource()) return;
   const spec = await getSpec();
   const quantities = selectedQuantities();
   if (quantities.length === 0) {
@@ -1027,7 +1432,7 @@ async function renderAll() {
         : {}),
     };
     for (const q of quantities) {
-      renderChart(els.fullCharts, currentRecords, spec, q, FULL_QUANTITIES, fullOpts);
+      renderChart(els.fullCharts, dataSource(), spec, q, FULL_QUANTITIES, fullOpts);
     }
   }
 
@@ -1040,7 +1445,7 @@ async function renderAll() {
       `Event #${ev.id}`, `${ev.kind} @ ${formatDate(ev.tStartMs)}`,
     ));
     for (const q of zoomQuantities) {
-      renderChart(els.eventCharts, currentRecords, spec, q, ZOOM_QUANTITIES, {
+      renderChart(els.eventCharts, dataSource(), spec, q, ZOOM_QUANTITIES, {
         startMs: ev.tStartMs - preMs,
         endMs: ev.tEndMs + postMs,
       });
@@ -1056,7 +1461,7 @@ async function renderAll() {
       `Snapshot #${s.id}`, `@ ${formatDate(s.tStartMs)}`,
     ));
     for (const q of zoomQuantities) {
-      renderChart(els.snapshotCharts, currentRecords, spec, q, ZOOM_QUANTITIES, {
+      renderChart(els.snapshotCharts, dataSource(), spec, q, ZOOM_QUANTITIES, {
         startMs: s.tStartMs,
         endMs: s.tEndMs,
       });
@@ -1077,25 +1482,24 @@ function renderOverlayChart(parentEl, spec, quantityKey, _allQuantities) {
   // chart readable; FULL_QUANTITIES often has 3 phases — we'd otherwise
   // overlay 9+ lines for 3 sessions × 3 phases).
   const firstCol = def.series[0];
-  const fi = new Map(spec.fields.map((f) => [f.name, f.index]));
-  const idx = fi.get(firstCol.name);
+  const accessors = all.map((s) => sessionAccessor(s, spec, firstCol.name));
 
-  const xs = [];   // pooled relative-seconds axis
   const ySeries = all.map(() => []);
   // Build a unified sorted x axis from the union of all sessions' rel-seconds.
   const xSet = new Set();
-  const relValues = all.map((s) =>
-    s.records.map((r) => Math.round((r.startMs - s.records[0]?.startMs ?? 0) / 1000))
-  );
-  for (const arr of relValues) for (const x of arr) xSet.add(x);
+  for (const acc of accessors) {
+    for (let i = 0; i < acc.n; i++) {
+      xSet.add(Math.round((acc.startMs(i) - acc.base) / 1000));
+    }
+  }
   const xsAll = [...xSet].sort((a, b) => a - b);
   // Per-session lookup: relSec → value
   for (let si = 0; si < all.length; si++) {
-    const s = all[si];
+    const acc = accessors[si];
     const map = new Map();
-    for (let i = 0; i < s.records.length; i++) {
-      const rel = Math.round((s.records[i].startMs - (s.records[0]?.startMs ?? 0)) / 1000);
-      map.set(rel, s.records[i].floats[idx] * firstCol.scale);
+    for (let i = 0; i < acc.n; i++) {
+      const rel = Math.round((acc.startMs(i) - acc.base) / 1000);
+      map.set(rel, acc.value(i) * firstCol.scale);
     }
     for (const x of xsAll) ySeries[si].push(map.has(x) ? map.get(x) : null);
   }
@@ -1213,6 +1617,44 @@ for (const cb of [els.reverseA, els.reverseB, els.reverseC]) {
     else renderSummary();
   });
 }
+document.getElementById('ct-reversal-apply')?.addEventListener('click', () => {
+  if (els.reverseA) els.reverseA.checked = true;
+  if (els.reverseB) els.reverseB.checked = true;
+  if (els.reverseC) els.reverseC.checked = true;
+  document.getElementById('ct-reversal-banner').hidden = true;
+  if (currentFile) parseStreaming(currentFile).catch(showError);
+  else if (currentArrayBuffer) parseBuffer();
+});
+// Per-asset rules-file (Feature I): load JSON, apply, re-detect.
+document.getElementById('rules-file-input')?.addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  const status = document.getElementById('rules-status');
+  const clearBtn = document.getElementById('rules-clear');
+  if (!file) return;
+  try {
+    const text = await file.text();
+    currentRulesRaw = JSON.parse(text);
+    rulesFromObject(currentRulesRaw, currentConfig?.asset_name ?? null);  // validate
+    if (status) status.textContent = ` Loaded ${file.name}; re-detecting…`;
+    if (clearBtn) clearBtn.hidden = false;
+    await redetect();
+    if (status) status.textContent = ` Applied ${file.name} (asset ${currentConfig?.asset_name ?? 'n/a'}).`;
+  } catch (err) {
+    currentRulesRaw = null;
+    if (status) status.textContent = ` Rules error: ${err.message}`;
+  }
+});
+document.getElementById('rules-clear')?.addEventListener('click', async () => {
+  currentRulesRaw = null;
+  const status = document.getElementById('rules-status');
+  const input = document.getElementById('rules-file-input');
+  const clearBtn = document.getElementById('rules-clear');
+  if (input) input.value = '';
+  if (clearBtn) clearBtn.hidden = true;
+  if (status) status.textContent = ' Rules cleared; using defaults.';
+  await redetect();
+});
+
 els.resetBtn.addEventListener('click', resetUi);
 els.eventsExportNotes?.addEventListener('click', () => {
   const json = exportNotesJson(currentFileHash, currentEvents);
@@ -1230,9 +1672,9 @@ els.tariffApplyBtn.addEventListener('click', async () => {
   const amps = Number(els.breakerRating.value) || 0;
   saveBreakerRating(amps);
   // Re-run insights with the new breaker context.
-  if (currentRecords) {
+  if (dataSource()) {
     const spec = await getSpec();
-    currentFindings = analyzeInsights(currentRecords, currentEvents, spec,
+    currentFindings = analyzeInsights(dataSource(), currentEvents, spec,
                                       currentSnapshots, currentConfig,
                                       { breakerRatingA: amps });
     renderInsights();
@@ -1305,6 +1747,21 @@ document.querySelectorAll('input[name=theme]').forEach((r) => {
 });
 loadTheme();
 
+// --- Report timezone (Feature H) -------------------------------------------
+(function initTz() {
+  const input = document.getElementById('tz-input');
+  if (!input) return;
+  const saved = localStorage.getItem(TZ_STORAGE_KEY) || '';
+  input.value = saved;
+  currentTz = saved || null;
+  input.addEventListener('change', () => {
+    currentTz = input.value.trim() || null;
+    if (currentTz) localStorage.setItem(TZ_STORAGE_KEY, currentTz);
+    else localStorage.removeItem(TZ_STORAGE_KEY);
+    renderTzRange();
+  });
+})();
+
 // --- Keyboard shortcuts ----------------------------------------------------
 
 document.addEventListener('keydown', (e) => {
@@ -1315,7 +1772,7 @@ document.addEventListener('keydown', (e) => {
   switch (e.key) {
     case 'r':
     case 'R':
-      if (currentRecords) { e.preventDefault(); renderAll().catch(showError); }
+      if (dataSource()) { e.preventDefault(); renderAll().catch(showError); }
       break;
     case 'z':
     case 'Z': {

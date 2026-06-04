@@ -1,0 +1,437 @@
+{
+  "stats": {
+    "V_LN_a_avg_V": {
+      "unit": "V",
+      "count": 600,
+      "min": 240.0,
+      "p1": 240.05,
+      "p5": 274.05,
+      "median": 277.05,
+      "mean": 275.7550000000001,
+      "p95": 280.05,
+      "p99": 280.05,
+      "max": 280.0,
+      "stdev": 6.9239902994348
+    },
+    "V_LN_b_avg_V": {
+      "unit": "V",
+      "count": 600,
+      "min": 277.0,
+      "p1": 277.05,
+      "p5": 277.05,
+      "median": 277.05,
+      "mean": 277.0,
+      "p95": 277.05,
+      "p99": 277.05,
+      "max": 277.0,
+      "stdev": 0.0
+    },
+    "V_LN_c_avg_V": {
+      "unit": "V",
+      "count": 600,
+      "min": 277.0,
+      "p1": 277.05,
+      "p5": 277.05,
+      "median": 277.05,
+      "mean": 277.0,
+      "p95": 277.05,
+      "p99": 277.05,
+      "max": 277.0,
+      "stdev": 0.0
+    },
+    "I_a_avg_A": {
+      "unit": "A",
+      "count": 600,
+      "min": 100.0,
+      "p1": 100.125,
+      "p5": 100.125,
+      "median": 105.125,
+      "mean": 104.975,
+      "p95": 110.125,
+      "p99": 110.125,
+      "max": 110.0,
+      "stdev": 3.160860905934752
+    },
+    "I_b_avg_A": {
+      "unit": "A",
+      "count": 600,
+      "min": 100.0,
+      "p1": 100.125,
+      "p5": 100.125,
+      "median": 100.125,
+      "mean": 100.0,
+      "p95": 100.125,
+      "p99": 100.125,
+      "max": 100.0,
+      "stdev": 0.0
+    },
+    "I_c_avg_A": {
+      "unit": "A",
+      "count": 600,
+      "min": 100.0,
+      "p1": 100.125,
+      "p5": 100.125,
+      "median": 100.125,
+      "mean": 106.25000000000011,
+      "p95": 100.125,
+      "p99": 100.125,
+      "max": 850.0,
+      "stdev": 68.17945071647314
+    },
+    "freq_avg_Hz": {
+      "unit": "Hz",
+      "count": 600,
+      "min": 59.9900016784668,
+      "p1": 59.99125,
+      "p5": 59.99125,
+      "median": 60.00125,
+      "mean": 59.999999999999936,
+      "p95": 60.00875,
+      "p99": 60.00875,
+      "max": 60.0099983215332,
+      "stdev": 0.008163595346876485
+    },
+    "P_total_avg_W": {
+      "unit": "W",
+      "count": 600,
+      "min": 50000.0,
+      "p1": 50500.0,
+      "p5": 52500.0,
+      "median": 74500.0,
+      "mean": 74500.00000000013,
+      "p95": 97500.0,
+      "p99": 99500.0,
+      "max": 99000.0,
+      "stdev": 14430.86968966181
+    },
+    "S_total_avg_VA": {
+      "unit": "VA",
+      "count": 600,
+      "min": 0.0,
+      "p1": 500.0,
+      "p5": 500.0,
+      "median": 500.0,
+      "mean": 0.0,
+      "p95": 500.0,
+      "p99": 500.0,
+      "max": 0.0,
+      "stdev": 0.0
+    },
+    "Q_total_avg_VAR": {
+      "unit": "VAR",
+      "count": 600,
+      "min": 0.0,
+      "p1": 500.0,
+      "p5": 500.0,
+      "median": 500.0,
+      "mean": 0.0,
+      "p95": 500.0,
+      "p99": 500.0,
+      "max": 0.0,
+      "stdev": 0.0
+    },
+    "PF_total_avg": {
+      "unit": "",
+      "count": 600,
+      "min": 0.8999999761581421,
+      "p1": 0.9001125000000003,
+      "p5": 0.9001125000000003,
+      "median": 0.9200625000000002,
+      "mean": 0.9200000047683707,
+      "p95": 0.9400125000000001,
+      "p99": 0.9400125000000001,
+      "max": 0.9399999976158142,
+      "stdev": 0.01414213899548889
+    },
+    "_thresholds": {
+      "undervoltage_v": 250.0,
+      "sec_undervoltage": 20,
+      "pct_undervoltage": 3.3333333333333335,
+      "overcurrent_a": 800.0,
+      "sec_overcurrent": 5,
+      "pct_overcurrent": 0.8333333333333334,
+      "total_records": 600
+    }
+  },
+  "tod_rows": [
+    {
+      "bin": "22:00",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 71.16666666666667,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 276.9,
+      "v_min_V": 274.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 104.75,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    },
+    {
+      "bin": "22:01",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 72.83333333333333,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 264.68333333333334,
+      "v_min_V": 240.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 105.16666666666667,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    },
+    {
+      "bin": "22:02",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 74.5,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 276.96666666666664,
+      "v_min_V": 274.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 104.85,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    },
+    {
+      "bin": "22:03",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 76.16666666666667,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 277.0,
+      "v_min_V": 274.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 105.08333333333333,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    },
+    {
+      "bin": "22:04",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 77.83333333333333,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 277.03333333333336,
+      "v_min_V": 274.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 104.95,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    },
+    {
+      "bin": "22:05",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 71.16666666666667,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 276.95,
+      "v_min_V": 274.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 105.0,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    },
+    {
+      "bin": "22:06",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 72.83333333333333,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 277.1,
+      "v_min_V": 274.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 105.05,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    },
+    {
+      "bin": "22:07",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 74.5,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 276.9,
+      "v_min_V": 274.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 104.91666666666667,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    },
+    {
+      "bin": "22:08",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 76.16666666666667,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 277.05,
+      "v_min_V": 274.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 105.15,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    },
+    {
+      "bin": "22:09",
+      "n": 60,
+      "n_days": 1,
+      "p_avg_kW": 77.83333333333333,
+      "p_min_kW": 50.0,
+      "p_max_kW": 99.0,
+      "v_avg_V": 276.96666666666664,
+      "v_min_V": 274.0,
+      "v_max_V": 280.0,
+      "i_avg_A": 104.83333333333333,
+      "i_min_A": 100.0,
+      "i_max_A": 110.0
+    }
+  ],
+  "itic_points": [
+    [
+      70.0,
+      0.1
+    ],
+    [
+      60.0,
+      1.0
+    ],
+    [
+      130.0,
+      0.4
+    ],
+    [
+      95.0,
+      5.0
+    ],
+    [
+      0.0,
+      18.0
+    ]
+  ],
+  "itic": [
+    "no_interruption",
+    "no_damage",
+    "prohibited",
+    "no_interruption",
+    "no_damage"
+  ],
+  "event_itic": [
+    {
+      "residual_pct": 72.0,
+      "duration_secs": 2.0,
+      "itic_class": "no_damage"
+    },
+    {
+      "residual_pct": 0.0,
+      "duration_secs": 120.0,
+      "itic_class": "no_damage"
+    },
+    {
+      "residual_pct": 113.99999999999999,
+      "duration_secs": 1.0,
+      "itic_class": "no_interruption"
+    }
+  ],
+  "ct_reversal": {
+    "reversed": true,
+    "frac_negative": 0.7,
+    "non_outage_records": 100,
+    "negative_records": 70,
+    "mean_p_w": -12000.0,
+    "threshold": 0.5
+  },
+  "narrative": "Asset MAC03 captured over 168.0 h (590,000 one-second records). The most significant event was a 18.5 min outage at 2024-01-13 22:01 UTC, preceded by a phase-c dip to 72%. Power factor (total) averaged 0.81 (p5 0.70, p95 0.95). Power factor below 0.85 for 99.8% of non-outage time. WARNING: real power is negative for 52% of non-outage time \u2014 the iFlex CTs are likely reversed; re-run with --reverse-cts. Bottom line: 1 alert-level finding(s) warrant follow-up.",
+  "ieee519": {
+    "limit_v_thd_pct": 8.0,
+    "planning_v_thd_pct": 5.0,
+    "voltage": {
+      "a": {
+        "p95": 9.025,
+        "limit": 8.0,
+        "planning": 5.0,
+        "compliant": false,
+        "exceeds_planning": true
+      },
+      "b": {
+        "p95": 2.7750000000000004,
+        "limit": 8.0,
+        "planning": 5.0,
+        "compliant": true,
+        "exceeds_planning": false
+      },
+      "c": {
+        "p95": 4.675,
+        "limit": 8.0,
+        "planning": 5.0,
+        "compliant": true,
+        "exceeds_planning": false
+      }
+    },
+    "current": {
+      "a": {
+        "p95": 14.05
+      },
+      "b": {
+        "p95": 0.05
+      },
+      "c": {
+        "p95": 0.05
+      }
+    },
+    "all_voltage_compliant": false
+  },
+  "sarfi": {
+    "SARFI-90": 2,
+    "SARFI-80": 2,
+    "SARFI-70": 1,
+    "SARFI-50": 1,
+    "SARFI-10": 1,
+    "events_considered": 2,
+    "nominal_ln_v": 277.0
+  },
+  "demand": {
+    "window_secs": 120,
+    "peak_demand_w": 53950.0,
+    "peak_demand_kw": 53.95,
+    "peak_window_end": "2024-01-13T22:10:00+00:00",
+    "peak_window_start": "2024-01-13T22:08:00+00:00",
+    "mean_demand_w": 29950.0,
+    "n_windows": 481,
+    "series": [
+      {
+        "t": "2024-01-13T22:02:00+00:00",
+        "demand_w": 5950.0
+      },
+      {
+        "t": "2024-01-13T22:04:00+00:00",
+        "demand_w": 17950.0
+      },
+      {
+        "t": "2024-01-13T22:06:00+00:00",
+        "demand_w": 29950.0
+      },
+      {
+        "t": "2024-01-13T22:08:00+00:00",
+        "demand_w": 41950.0
+      },
+      {
+        "t": "2024-01-13T22:10:00+00:00",
+        "demand_w": 53950.0
+      }
+    ]
+  },
+  "timezone": {
+    "epoch_ms": 1705158000000,
+    "utc": "2024-01-13T15:00:00+00:00",
+    "chicago": "2024-01-13T09:00:00-06:00 (2024-01-13T15:00:00+00:00)"
+  }
+}
