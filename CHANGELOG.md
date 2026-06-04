@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-06-03
+
+Generalized, named, configurable shift/period splitting — so usage can be
+compared across operator-defined shifts (day vs night, A/B/C), with windows
+that may wrap past midnight. Parity-tested Python↔JS.
+
+### Added — shift splitting (`--split-by shifts`)
+- **`--split-by shifts`** activates named shift mode, with **`--shifts
+  "name=HH:MM-HH:MM,..."`** (comma-separated; a window where `end<=start` wraps
+  past midnight, e.g. `night=18:00-06:00`) or the JSON **`--shifts-file`**
+  (`{"shifts":[{"name","start","end"}]}`, mirroring `--rules-file`). With neither
+  flag the default is `day=06:00-18:00,night=18:00-06:00`.
+- **Timezone-correct windows:** shift windows are evaluated in the report
+  timezone (`--tz`), localizing each UTC record before applying the `HH:MM`
+  rule (UTC if `--tz` unset, and the output says so). Validated on a real
+  Central-time session: day/night split lands exactly on 06:00 / 18:00 Central.
+- **Two outputs:**
+  - `shift_comparison.csv` + `shift_comparison.json` — the headline per-shift
+    aggregate (records, hours, kWh, P avg/min/max, peak rolling demand, PF avg,
+    V_LN avg/p5/p95, V_THD p95, event counts, outage minutes), gathering each
+    shift's non-contiguous records across the whole session.
+  - Per-occurrence contiguous buckets under `<out>/shifts/<name>_<date>/`
+    (session.csv, events.json+ITIC, summary.txt); a midnight-spanning night is
+    one occurrence labeled by its start date.
+- Gap/overlap validation (warns when windows don't tile 24 h), first-matching
+  window wins on overlap, and an `unassigned` shift for records matching none.
+- Shift-comparison table embedded in `summary.txt`.
+
+### Added — model + parity
+- `analysis.py`: `Shift` / `ShiftSet` (parse / from_spec / default /
+  coverage_issues), `gather_store` (non-contiguous index slicing),
+  `aggregate_shifts`, `shift_occurrences`, `shift_comparison_rows`; new
+  `shifts_file.py` loader.
+- `web/analysis.js`: full JS port (`ShiftSet`, `localMinuteOfDay`,
+  `aggregateShifts`, `shiftOccurrences`, `shiftComparisonRows`) with a
+  Python↔JS parity test (`web/tests/shifts_parity.test.js`) on a shared
+  synthetic multi-day fixture.
+- Docs: new [`docs/SHIFTS.md`](docs/SHIFTS.md); README options table updated.
+
+### Tests
+- Python 251 passing (was 223); web 120 passing (was 114).
+
 ## [0.6.0] — 2026-06-03
 
 Web parity + analysis depth. Closes the web memory/parity gap from 0.5.0 and

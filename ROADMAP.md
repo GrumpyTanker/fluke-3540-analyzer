@@ -4,6 +4,27 @@ Shipped releases live in [CHANGELOG.md](CHANGELOG.md). This file is the
 backlog of ideas we've discussed but not yet committed to a specific
 release.
 
+## Shipped in v0.7 — generalized shift splitting
+
+Operator-defined, named, midnight-wrapping shift windows so usage can be
+compared across shifts (day vs night, A/B/C), parity-tested Python↔JS:
+
+- **`--split-by shifts`** + `--shifts "name=HH:MM-HH:MM,..."` / `--shifts-file`
+  (JSON). Windows that wrap past midnight; default day/night.
+- Windows evaluated in the **report timezone** (`--tz`), not raw UTC — verified
+  on a real Central-time session.
+- Headline `shift_comparison.csv`/`.json` aggregate per shift name (energy,
+  power, peak demand, PF, V_LN/THD percentiles, event counts, outage minutes)
+  plus per-occurrence contiguous buckets. This delivers the shift slice of the
+  open **comparison polish (Theme C)** backlog.
+- New model in `analysis.py` (`Shift`/`ShiftSet`, `gather_store`,
+  `aggregate_shifts`, `shift_occurrences`, `shift_comparison_rows`) + JS port +
+  parity test + `docs/SHIFTS.md`.
+
+Still open from comparison polish: cross-session / period-over-period diffing
+and a web UI surface for shifts (the core logic + parity are shipped; web
+rendering is best-effort).
+
 ## Shipped in v0.6 — web parity + analysis depth
 
 Closed the v0.5 web memory/parity gap and added standards-grade analysis, all
