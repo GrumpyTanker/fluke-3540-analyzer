@@ -4,6 +4,28 @@ Shipped releases live in [CHANGELOG.md](CHANGELOG.md). This file is the
 backlog of ideas we've discussed but not yet committed to a specific
 release.
 
+## Shipped in v0.8 — active/standby load-state split
+
+Bimodal-load handling, built from the real P115RE coating-rectifier session,
+parity-tested Python↔JS:
+
+- **Current-gated classifier** (`--standby-threshold-a`, default 50 A) splitting
+  each record into active vs standby, reported separately in
+  `load_states.csv`/`.json`.
+- **Three explicit energy figures** (as-measured / active-only / net-clip
+  standby) — the standby real-power sign is unreliable at low current, so the
+  historic signed sum understates consumption; the report never silently
+  changes it.
+- **Headline PF = active-state PF** in the narrative/summary/HTML (the blended
+  whole-session PF is meaningless for a bimodal load).
+- **Magnitude-weighted reverse-CTs auto-detect** — decides on the dominant
+  high-current (active) state instead of the fragile whole-session negative-P
+  count. Manual `--reverse-cts` unchanged.
+- Shift rows gain `active_duty_pct` / `active_kWh` / `active_PF_avg`.
+- New `analysis.py` funcs (`classify_load_states`, `load_state_rows`,
+  `session_energy`, `active_state_pf`) + JS port + parity test +
+  `docs/LOAD_STATES.md`.
+
 ## Shipped in v0.7 — generalized shift splitting
 
 Operator-defined, named, midnight-wrapping shift windows so usage can be

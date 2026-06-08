@@ -192,71 +192,162 @@ def whole_session_stats(
 # load reads as a persistent *generator* (P_total < 0). We flag a session when
 # real power is negative for a high fraction of NON-OUTAGE time — outage samples
 # (all phases collapsed) are excluded because P there is ~0/noise.
+#
+# Bimodal loads (e.g. a rectifier that toggles between a heavy ACTIVE draw and a
+# light STANDBY state) defeat a naive count-based test: at low current the real-
+# power sign is unreliable, so a session can read negative-P more than half the
+# time while the *real* consumption — the high-current active state — is clearly
+# positive (or clearly negative if the CTs really are backwards). The auto-detect
+# therefore decides on the DOMINANT HIGH-CURRENT (active) state: it asks whether
+# real power is negative when current is high. The whole-session count-based
+# fields are still reported (for context / back-compat), but ``reversed`` and the
+# operator notice key off the active state.
+
+# Default per-phase current (A) above which a record counts as "active" load.
+# Shared with the load-state classifier so the two views agree.
+STANDBY_CURRENT_THRESHOLD_A = 50.0
+
+
+def _mean_phase_current(ia, ib, ic, i: int) -> float:
+    """Mean of the three per-phase avg currents at record ``i`` (NaN->skipped).
+
+    Returns the average over the finite phases (0.0 if none are finite), so a
+    single dropped phase doesn't drag the classifier toward standby.
+    """
+    s = 0.0
+    k = 0
+    for c in (ia[i], ib[i], ic[i]):
+        if c == c and c not in (math.inf, -math.inf):  # finite
+            s += c
+            k += 1
+    return (s / k) if k else 0.0
+
 
 def detect_ct_reversal(
     store: ColumnStore,
     neg_fraction_threshold: float = 0.50,
     outage_v_threshold: float = 50.0,
+    active_threshold_a: float = STANDBY_CURRENT_THRESHOLD_A,
 ) -> dict:
-    """Detect a likely reversed-CT install from sustained negative real power.
+    """Detect a likely reversed-CT install, deciding on the active (high-I) state.
 
     Returns a dict:
         {
-          "reversed": bool,            # True if neg fraction >= threshold
-          "frac_negative": float,      # fraction of non-outage records with P<0
+          "reversed": bool,            # decision (see basis below)
+          "frac_negative": float,      # whole-session: fraction non-outage P<0
           "non_outage_records": int,
           "negative_records": int,
           "mean_p_w": float,           # mean P over finite non-outage records
-          "threshold": float,
+          "threshold": float,          # neg_fraction_threshold
+          # --- magnitude-weighted (active-state) decision ---
+          "basis": "active" | "whole_session",
+          "active_threshold_a": float,
+          "active_records": int,       # non-outage records with mean I >= thresh
+          "active_negative_records": int,
+          "active_frac_negative": float,
+          "active_mean_p_w": float,    # mean P over the active state
         }
 
-    A correctly-wired load draws positive real power essentially all the time,
-    so even a modestly-sustained negative-P fraction is a strong reversal signal;
-    the default 0.50 threshold (negative more often than positive) catches it
-    while staying clear of brief regen/export blips. Non-finite P samples are
-    skipped (the real meter occasionally emits NaN). ``reversed`` True means the
-    data looks like a load wired with backwards CTs — re-run with
-    ``--reverse-cts`` (or ``--auto-reverse-cts``) to correct it.
+    DECISION BASIS. When the session has a meaningful active (high-current)
+    population, ``reversed`` is True iff real power is negative for at least
+    ``neg_fraction_threshold`` of the ACTIVE records — i.e. the real consumption
+    looks like export. This is robust for bimodal loads where the low-current
+    standby sign is noise. If there is no active population (everything is below
+    ``active_threshold_a``), the test falls back to the whole-session count-based
+    fraction (``basis`` = "whole_session"). Non-finite P samples are skipped (the
+    real meter occasionally emits NaN). ``reversed`` True means the data looks
+    like a load wired with backwards CTs — re-run with ``--reverse-cts`` (or
+    ``--auto-reverse-cts``) to correct it.
     """
     p = store.col("P_total_avg_W")
     va = store.col("V_LN_a_avg_V")
     vb = store.col("V_LN_b_avg_V")
     vc = store.col("V_LN_c_avg_V")
+    ia = store.col("I_a_avg_A")
+    ib = store.col("I_b_avg_A")
+    ic = store.col("I_c_avg_A")
     n = store.n
     non_outage = 0
     negative = 0
     p_sum = 0.0
     p_count = 0
+    active = 0
+    active_negative = 0
+    active_p_sum = 0.0
+    active_p_count = 0
     for i in range(n):
         if va[i] > outage_v_threshold and vb[i] > outage_v_threshold and vc[i] > outage_v_threshold:
             non_outage += 1
             pv = p[i]
-            if pv == pv and pv not in (math.inf, -math.inf):  # finite
+            finite = pv == pv and pv not in (math.inf, -math.inf)
+            if finite:
                 p_sum += pv
                 p_count += 1
             if pv < 0:  # NaN < 0 is False, so non-finite never counts as negative
                 negative += 1
+            if _mean_phase_current(ia, ib, ic, i) >= active_threshold_a:
+                active += 1
+                if finite:
+                    active_p_sum += pv
+                    active_p_count += 1
+                if pv < 0:
+                    active_negative += 1
     frac = (negative / non_outage) if non_outage else 0.0
     mean_p = (p_sum / p_count) if p_count else 0.0
+    active_frac = (active_negative / active) if active else 0.0
+    active_mean_p = (active_p_sum / active_p_count) if active_p_count else 0.0
+
+    if active > 0:
+        basis = "active"
+        reversed_ = active_frac >= neg_fraction_threshold
+    else:
+        basis = "whole_session"
+        reversed_ = frac >= neg_fraction_threshold
+
     return {
-        "reversed": frac >= neg_fraction_threshold,
+        "reversed": reversed_,
         "frac_negative": frac,
         "non_outage_records": non_outage,
         "negative_records": negative,
         "mean_p_w": mean_p,
         "threshold": neg_fraction_threshold,
+        "basis": basis,
+        "active_threshold_a": active_threshold_a,
+        "active_records": active,
+        "active_negative_records": active_negative,
+        "active_frac_negative": active_frac,
+        "active_mean_p_w": active_mean_p,
     }
 
 
 def ct_reversal_notice(result: dict) -> str:
-    """A loud, explicit operator-facing notice for a flagged CT reversal."""
-    pct = result["frac_negative"] * 100.0
+    """A loud, explicit operator-facing notice for a flagged CT reversal.
+
+    Keys the headline numbers off the ACTIVE (high-current) state when that is
+    the decision basis, since the low-current standby sign is unreliable.
+    """
+    if result.get("basis") == "active":
+        pct = result["active_frac_negative"] * 100.0
+        mean_kw = result["active_mean_p_w"] / 1000.0
+        basis_line = (
+            f"  Real power is NEGATIVE for {pct:.1f}% of ACTIVE (high-current, "
+            f"I >= {result['active_threshold_a']:.0f} A/phase) time "
+            f"(active mean P = {mean_kw:.1f} kW). A load should draw positive "
+            "real power when it is actually running."
+        )
+    else:
+        pct = result["frac_negative"] * 100.0
+        mean_kw = result["mean_p_w"] / 1000.0
+        basis_line = (
+            f"  Real power (P_total) is NEGATIVE for {pct:.1f}% of non-outage "
+            f"time (mean P = {mean_kw:.1f} kW). A load should draw positive "
+            "real power."
+        )
     return (
         "  !!  CT REVERSAL DETECTED  !!\n"
-        f"  Real power (P_total) is NEGATIVE for {pct:.1f}% of non-outage time "
-        f"(mean P = {result['mean_p_w'] / 1000:.1f} kW). A load should draw "
-        "positive real power — this signature means one or more iFlex CT probes "
-        "are clipped on backwards.\n"
+        f"{basis_line}\n"
+        "  This signature means one or more iFlex CT probes are clipped on "
+        "backwards.\n"
         "  Re-run with --reverse-cts to negate P/Q/PF/energy, or "
         "--auto-reverse-cts to apply the correction automatically."
     )
@@ -839,7 +930,9 @@ def shift_occurrences(store: ColumnStore, ss: ShiftSet, tz=None
 
 def shift_comparison_rows(store: ColumnStore, ss: ShiftSet, events: Sequence,
                           tz=None, nominal_ln_v: float = 277.0,
-                          demand_window: int = 15) -> list[dict]:
+                          demand_window: int = 15,
+                          standby_threshold_a: float = STANDBY_CURRENT_THRESHOLD_A,
+                          ) -> list[dict]:
     """The headline per-shift-name aggregate comparison.
 
     One row per named shift (plus ``unassigned`` if any records land there),
@@ -847,7 +940,10 @@ def shift_comparison_rows(store: ColumnStore, ss: ShiftSet, events: Sequence,
     are filed to a shift by the shift their ``t_start`` falls in.
 
     ``demand_window`` is in MINUTES (peak rolling demand within the shift's
-    records). Per-row energy/avg/percentiles are memory-bounded.
+    records). Per-row energy/avg/percentiles are memory-bounded. Each row also
+    carries its active-state load (``active_duty_pct``, ``active_kWh``,
+    ``active_PF_avg``) using ``standby_threshold_a`` as the active/standby
+    current cut.
     """
     by_name = aggregate_shifts(store, ss, tz=tz)
     win_by_name = {sh.name: sh for sh in ss.shifts}
@@ -872,17 +968,20 @@ def shift_comparison_rows(store: ColumnStore, ss: ShiftSet, events: Sequence,
         window = sh.window_str if sh is not None else "—"
         bucket_events = ev_by_name.get(name, [])
         rows.append(_shift_row(name, window, sub, bucket_events,
-                               nominal_ln_v, demand_window))
+                               nominal_ln_v, demand_window,
+                               standby_threshold_a))
     return rows
 
 
 def _shift_row(name: str, window: str, sub: ColumnStore, bucket_events,
-               nominal_ln_v: float, demand_window: int) -> dict:
+               nominal_ln_v: float, demand_window: int,
+               standby_threshold_a: float = STANDBY_CURRENT_THRESHOLD_A) -> dict:
     """Aggregate one shift's records into a comparison row."""
     nrec = sub.n
     p = sub.col("P_total_avg_W")
     pf = sub.col("PF_total_avg")
     va = sub.col("V_LN_a_avg_V"); vb = sub.col("V_LN_b_avg_V"); vc = sub.col("V_LN_c_avg_V")
+    ia = sub.col("I_a_avg_A"); ib = sub.col("I_b_avg_A"); ic = sub.col("I_c_avg_A")
     vth_a = sub.col("V_THD_pct_a_avg")
     vth_b = sub.col("V_THD_pct_b_avg")
     vth_c = sub.col("V_THD_pct_c_avg")
@@ -893,14 +992,25 @@ def _shift_row(name: str, window: str, sub: ColumnStore, bucket_events,
     v_mom = _RunningMoments()
     v_sketch = _PercentileSketch(0.0, 400.0)
     vthd_sketch = _PercentileSketch(0.0, 50.0)
+    # Active-state (high-current) sub-aggregates for the shift's own load split.
+    act_p_mom = _RunningMoments()
+    act_pf_mom = _RunningMoments()
+    act_records = 0
     for i in range(nrec):
         pv = p[i]
+        is_active = _mean_phase_current(ia, ib, ic, i) >= standby_threshold_a
+        if is_active:
+            act_records += 1
         if math.isfinite(pv):
             p_mom.add(pv)
             p_min = min(p_min, pv); p_max = max(p_max, pv)
+            if is_active:
+                act_p_mom.add(pv)
         pfi = pf[i]
         if math.isfinite(pfi):
             pf_mom.add(pfi)
+            if is_active:
+                act_pf_mom.add(pfi)
         for vv in (va[i], vb[i], vc[i]):
             if math.isfinite(vv) and vv > 50.0:  # ignore outage zeros
                 v_mom.add(vv); v_sketch.add(vv)
@@ -911,6 +1021,11 @@ def _shift_row(name: str, window: str, sub: ColumnStore, bucket_events,
     p_mean = p_mom.mean if p_mom.n else 0.0
     hours = p_mom.n / 3600.0  # 1 record == 1 s
     kwh = p_mean / 1000.0 * hours
+
+    act_p_mean = act_p_mom.mean if act_p_mom.n else 0.0
+    act_hours = act_p_mom.n / 3600.0
+    act_kwh = act_p_mean / 1000.0 * act_hours
+    act_duty_pct = (act_records / nrec * 100.0) if nrec else 0.0
 
     # Peak rolling demand within the shift's gathered records.
     demand = demand_analysis(sub, window_secs=max(1, demand_window * 60))
@@ -946,7 +1061,206 @@ def _shift_row(name: str, window: str, sub: ColumnStore, bucket_events,
         "n_dips": n_dip,
         "n_swells": n_swell,
         "outage_minutes": outage_minutes,
+        # Active-state load (current-gated) for this shift.
+        "active_records": act_records,
+        "active_duty_pct": act_duty_pct,
+        "active_kWh": act_kwh,
+        "active_PF_avg": (act_pf_mom.mean if act_pf_mom.n else 0.0),
     }
+
+
+# --- Load-state split (active vs standby, current-gated) --------------------
+#
+# Real bimodal loads (e.g. a coating rectifier) alternate between a heavy ACTIVE
+# draw and a light STANDBY state. The two states have very different — and not
+# uniformly trustworthy — power signatures, so blending them into one session
+# mean buries the real consumption and produces a meaningless mean PF.
+#
+# We classify each record by mean per-phase CURRENT (not power, because the
+# power SIGN at low current is exactly the thing in question): a record is
+# ``active`` when (I_a_avg + I_b_avg + I_c_avg)/3 >= the threshold (default
+# 50 A), else ``standby``. The two states are then aggregated and reported
+# separately, and three energy figures are surfaced (see ``session_energy``).
+
+LOAD_STATES = ("active", "standby")
+
+
+def classify_load_states(
+    store: ColumnStore,
+    threshold_a: float = STANDBY_CURRENT_THRESHOLD_A,
+) -> dict[str, list[int]]:
+    """Partition record indices into ``active`` / ``standby`` by mean current.
+
+    Returns ``{"active": [ascending idx], "standby": [ascending idx]}``. A
+    record is active when its mean per-phase avg current is >= ``threshold_a``.
+    Records with no finite phase current read 0 A and fall to standby.
+    """
+    ia = store.col("I_a_avg_A")
+    ib = store.col("I_b_avg_A")
+    ic = store.col("I_c_avg_A")
+    active: list[int] = []
+    standby: list[int] = []
+    for i in range(store.n):
+        if _mean_phase_current(ia, ib, ic, i) >= threshold_a:
+            active.append(i)
+        else:
+            standby.append(i)
+    return {"active": active, "standby": standby}
+
+
+def _load_state_row(name: str, sub: ColumnStore, total_records: int) -> dict:
+    """Aggregate one load state's gathered records into a comparison row."""
+    nrec = sub.n
+    p = sub.col("P_total_avg_W")
+    pf = sub.col("PF_total_avg")
+    s = sub.col("S_total_avg_VA")
+    va = sub.col("V_LN_a_avg_V"); vb = sub.col("V_LN_b_avg_V"); vc = sub.col("V_LN_c_avg_V")
+    ia = sub.col("I_a_avg_A"); ib = sub.col("I_b_avg_A"); ic = sub.col("I_c_avg_A")
+    vth_a = sub.col("V_THD_pct_a_avg")
+    vth_b = sub.col("V_THD_pct_b_avg")
+    vth_c = sub.col("V_THD_pct_c_avg")
+
+    p_mom = _RunningMoments()
+    p_min = math.inf; p_max = -math.inf
+    pf_mom = _RunningMoments()
+    s_mom = _RunningMoments()
+    i_mom = _RunningMoments()
+    v_mom = _RunningMoments()
+    vthd_sketch = _PercentileSketch(0.0, 50.0)
+    for i in range(nrec):
+        pv = p[i]
+        if math.isfinite(pv):
+            p_mom.add(pv)
+            p_min = min(p_min, pv); p_max = max(p_max, pv)
+        pfi = pf[i]
+        if math.isfinite(pfi):
+            pf_mom.add(pfi)
+        sv = s[i]
+        if math.isfinite(sv):
+            s_mom.add(sv)
+        i_mom.add(_mean_phase_current(ia, ib, ic, i))
+        for vv in (va[i], vb[i], vc[i]):
+            if math.isfinite(vv) and vv > 50.0:  # ignore outage zeros
+                v_mom.add(vv)
+        for tv in (vth_a[i], vth_b[i], vth_c[i]):
+            if math.isfinite(tv):
+                vthd_sketch.add(tv)
+
+    p_mean = p_mom.mean if p_mom.n else 0.0
+    hours = p_mom.n / 3600.0  # 1 record == 1 s
+    kwh = p_mean / 1000.0 * hours
+
+    def q(sketch, p_):
+        v = sketch.quantile(p_)
+        return 0.0 if (v != v) else v
+
+    return {
+        "state": name,
+        "records": nrec,
+        "hours": hours,
+        "duty_pct": (nrec / total_records * 100.0) if total_records else 0.0,
+        "kWh": kwh,
+        "P_avg_kW": p_mean / 1000.0,
+        "P_min_kW": (p_min / 1000.0 if p_min != math.inf else 0.0),
+        "P_max_kW": (p_max / 1000.0 if p_max != -math.inf else 0.0),
+        "I_avg_A": (i_mom.mean if i_mom.n else 0.0),
+        "S_avg_kVA": (s_mom.mean / 1000.0 if s_mom.n else 0.0),
+        "PF_avg": (pf_mom.mean if pf_mom.n else 0.0),
+        "V_LN_avg_V": (v_mom.mean if v_mom.n else 0.0),
+        "V_THD_p95_pct": q(vthd_sketch, 0.95),
+    }
+
+
+def load_state_rows(
+    store: ColumnStore,
+    threshold_a: float = STANDBY_CURRENT_THRESHOLD_A,
+) -> list[dict]:
+    """Per-load-state comparison rows (one each for ``active`` then ``standby``).
+
+    Each row carries records/hours/duty_pct/kWh, P avg/min/max (kW), I_avg (A),
+    S_avg (kVA), PF_avg, V_LN_avg (V), and V_THD_p95 (%). Rows are always in the
+    fixed order (active, standby) so downstream tables are stable.
+    """
+    groups = classify_load_states(store, threshold_a)
+    total = store.n
+    rows: list[dict] = []
+    for name in LOAD_STATES:
+        sub = gather_store(store, groups[name])
+        rows.append(_load_state_row(name, sub, total))
+    return rows
+
+
+def session_energy(
+    store: ColumnStore,
+    threshold_a: float = STANDBY_CURRENT_THRESHOLD_A,
+) -> dict:
+    """Three explicitly-labeled session energy figures (kWh) + the caveat note.
+
+    Returns::
+
+        {
+          "energy_as_measured_kWh": float,   # signed sum — current behavior
+          "energy_active_kWh": float,        # active (high-I) records only
+          "energy_net_clip_standby_kWh": float,  # standby real power clipped >=0
+          "standby_threshold_a": float,
+          "note": str,
+        }
+
+    All three use the same kWh convention as the rest of the tool: per record
+    (1 s) energy = P_total_avg_W / 1000 / 3600, summed. Non-finite P samples are
+    skipped. ``energy_as_measured_kWh`` is unchanged from the historic signed
+    sum; the active / clip figures correct for the unreliable low-current
+    standby sign and are the defensible consumption.
+    """
+    p = store.col("P_total_avg_W")
+    ia = store.col("I_a_avg_A")
+    ib = store.col("I_b_avg_A")
+    ic = store.col("I_c_avg_A")
+    per_kwh = 1.0 / 1000.0 / 3600.0  # W * 1 s -> kWh
+
+    as_measured = 0.0
+    active = 0.0
+    net_clip = 0.0
+    for i in range(store.n):
+        pv = p[i]
+        if not (pv == pv and pv not in (math.inf, -math.inf)):  # skip non-finite
+            continue
+        e = pv * per_kwh
+        as_measured += e
+        if _mean_phase_current(ia, ib, ic, i) >= threshold_a:
+            active += e
+            net_clip += e  # active records pass through unchanged
+        else:
+            # standby: clip real power to >= 0 (a rectifier in standby draws
+            # small positive losses, never exports).
+            if pv > 0:
+                net_clip += e
+    return {
+        "energy_as_measured_kWh": as_measured,
+        "energy_active_kWh": active,
+        "energy_net_clip_standby_kWh": net_clip,
+        "standby_threshold_a": threshold_a,
+        "note": (
+            "Standby real-power SIGN is unreliable at low current, so the "
+            "as-measured signed sum can understate consumption. energy_active "
+            "(active records only) and energy_net_clip_standby (standby real "
+            "power clipped to >=0) are the defensible consumption figures."
+        ),
+    }
+
+
+def active_state_pf(
+    rows: Sequence[dict],
+) -> float | None:
+    """Pull the active-state mean PF out of :func:`load_state_rows` output.
+
+    Returns the active row's ``PF_avg`` (the meaningful headline PF for a
+    bimodal load), or ``None`` if there is no active row.
+    """
+    for r in rows:
+        if r.get("state") == "active":
+            return r.get("PF_avg")
+    return None
 
 
 # --- Event markers / correlation (--mark / --marks) -------------------------

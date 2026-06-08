@@ -52,6 +52,37 @@ def test_narrative_includes_pf_and_ct():
     assert "Bottom line: 1 alert-level finding" in n
 
 
+def test_narrative_prefers_active_state_pf_and_energy():
+    stats = {
+        "PF_total_avg": {"mean": -0.09, "p5": -0.70, "p95": 0.50},
+        "_thresholds": {"total_records": 1000},
+    }
+    load_states = {
+        "standby_threshold_a": 50.0,
+        "states": [
+            {"state": "active", "records": 490, "duty_pct": 49.0,
+             "I_avg_A": 239.0, "P_avg_kW": 97.0, "PF_avg": 0.47, "kWh": 6638.0},
+            {"state": "standby", "records": 470, "duty_pct": 47.0,
+             "I_avg_A": 16.0, "P_avg_kW": -7.6, "PF_avg": -0.64, "kWh": -100.0},
+        ],
+        "energy": {
+            "energy_as_measured_kWh": 6054.0,
+            "energy_active_kWh": 6638.0,
+            "energy_net_clip_standby_kWh": 6684.0,
+        },
+    }
+    n = build_narrative([], [], stats, None, config={"asset_name": "P115RE"},
+                        load_states=load_states)
+    # headline PF is the ACTIVE-state PF, not the meaningless blended -0.09
+    assert "Active-state power factor averaged 0.47" in n
+    assert "not meaningful for a bimodal load" in n
+    # bimodal description + three energy figures
+    assert "bimodal" in n.lower()
+    assert "6054 kWh as-measured" in n
+    assert "6638 kWh active-only" in n
+    assert "6684 kWh net" in n
+
+
 def test_narrative_dip_only_no_outage():
     dip = _ev(0, "dip", 50, 53, 0.65, ("a",))
     n = build_narrative([dip], [], None, None)

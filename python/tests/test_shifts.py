@@ -318,6 +318,46 @@ def test_shift_comparison_rows_schema_and_values():
         assert k in d, f"missing schema key {k}"
 
 
+def test_shift_comparison_has_active_state_columns():
+    # Each shift row exposes its active-state load (current-gated). Build a day
+    # shift that is half active (high current) and half standby (low current),
+    # and a night shift that is all standby.
+    overrides = {}
+    # 17:59:00 day window: 30 active (200 A, 80 kW) + 30 standby (10 A, -5 kW)
+    for i in range(30):
+        overrides[i] = {"I_a_avg_A": 200.0, "I_b_avg_A": 200.0,
+                        "I_c_avg_A": 200.0, "P_total_avg_W": 80_000.0,
+                        "PF_total_avg": 0.5}
+    for i in range(30, 60):
+        overrides[i] = {"I_a_avg_A": 10.0, "I_b_avg_A": 10.0,
+                        "I_c_avg_A": 10.0, "P_total_avg_W": -5_000.0,
+                        "PF_total_avg": -0.6}
+    # 18:00:00 night window: 60 standby
+    for i in range(60, 120):
+        overrides[i] = {"I_a_avg_A": 10.0, "I_b_avg_A": 10.0,
+                        "I_c_avg_A": 10.0, "P_total_avg_W": -5_000.0,
+                        "PF_total_avg": -0.6}
+    base = dt.datetime(2026, 5, 29, 17, 59, 0, tzinfo=dt.timezone.utc)
+    recs = make_records(120, base=base, overrides=overrides)
+    store = ColumnStore.from_records(recs)
+    ss = ShiftSet.parse("day=06:00-18:00,night=18:00-06:00")
+    rows = shift_comparison_rows(store, ss, events=[], tz=None,
+                                 nominal_ln_v=277.0, demand_window=15,
+                                 standby_threshold_a=50.0)
+    by = {r["shift"]: r for r in rows}
+    for k in ("active_records", "active_duty_pct", "active_kWh", "active_PF_avg"):
+        assert k in by["day"], f"missing active column {k}"
+    # day: 30 of 60 are active.
+    assert by["day"]["active_records"] == 30
+    assert by["day"]["active_duty_pct"] == pytest.approx(50.0)
+    assert by["day"]["active_PF_avg"] == pytest.approx(0.5)
+    assert by["day"]["active_kWh"] == pytest.approx(80.0 * (30 / 3600.0))
+    # night: no active records.
+    assert by["night"]["active_records"] == 0
+    assert by["night"]["active_duty_pct"] == pytest.approx(0.0)
+    assert by["night"]["active_kWh"] == pytest.approx(0.0)
+
+
 def test_shift_comparison_multi_day_aggregates_across_occurrences():
     # Two day-shift windows on two different dates aggregate into ONE day row.
     # Day A: 2026-05-29 08:00 ×30 @ 5kW ; Day B: 2026-05-30 08:00 ×30 @ 15kW.

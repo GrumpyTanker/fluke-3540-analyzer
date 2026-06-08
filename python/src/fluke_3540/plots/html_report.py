@@ -199,6 +199,53 @@ def _insights_html(findings: Sequence[Finding]) -> str:
     return "\n".join(out)
 
 
+def _load_states_html(load_states: Mapping | None) -> str:
+    """Compact active-vs-standby load-state table + the three energy figures."""
+    if not load_states or not load_states.get("states"):
+        return ""
+    thr = load_states.get("standby_threshold_a", 50.0)
+    rows = load_states["states"]
+    parts = [
+        f"<section class='load-states'><h2>Load states "
+        f"(active vs standby, cut at {thr:.0f} A/phase)</h2>",
+        "<table><thead><tr>"
+        "<th>state</th><th>duty %</th><th>records</th><th>I avg (A)</th>"
+        "<th>P avg (kW)</th><th>S avg (kVA)</th><th>PF</th><th>kWh</th>"
+        "</tr></thead><tbody>",
+    ]
+    for r in rows:
+        parts.append(
+            "<tr>"
+            f"<td>{html.escape(str(r['state']))}</td>"
+            f"<td>{r['duty_pct']:.1f}</td>"
+            f"<td>{r['records']}</td>"
+            f"<td>{r['I_avg_A']:.1f}</td>"
+            f"<td>{r['P_avg_kW']:+.2f}</td>"
+            f"<td>{r['S_avg_kVA']:.2f}</td>"
+            f"<td>{r['PF_avg']:+.3f}</td>"
+            f"<td>{r['kWh']:.2f}</td>"
+            "</tr>"
+        )
+    parts.append("</tbody></table>")
+    en = load_states.get("energy")
+    if en:
+        parts.append(
+            "<table class='energy'><thead><tr><th>energy figure</th>"
+            "<th>kWh</th></tr></thead><tbody>"
+            f"<tr><td>as-measured (signed)</td><td>"
+            f"{en['energy_as_measured_kWh']:.1f}</td></tr>"
+            f"<tr><td>active-only</td><td>{en['energy_active_kWh']:.1f}</td></tr>"
+            f"<tr><td>net (standby clipped &ge;0)</td><td>"
+            f"{en['energy_net_clip_standby_kWh']:.1f}</td></tr>"
+            "</tbody></table>"
+            "<p class='caveat'>Standby real-power sign is unreliable at low "
+            "current, so the active / clip figures are the defensible "
+            "consumption.</p>"
+        )
+    parts.append("</section>")
+    return "".join(parts)
+
+
 def render_report_html(
     *,
     title: str,
@@ -210,6 +257,7 @@ def render_report_html(
     findings: Sequence[Finding] = (),
     generated_at: dt.datetime | None = None,
     narrative: str | None = None,
+    load_states: Mapping | None = None,
 ) -> str:
     generated_at = generated_at or dt.datetime.now(dt.timezone.utc)
     body = []
@@ -222,6 +270,9 @@ def render_report_html(
         )
     body.append("<h2>Summary</h2>")
     body.append(_summary_dl_html(summary_stats, config))
+    ls_html = _load_states_html(load_states)
+    if ls_html:
+        body.append(ls_html)
     if findings:
         body.append(_insights_html(findings))
     body.append("<h2>Events</h2>")
@@ -254,6 +305,7 @@ def write_html_report(
     findings: Sequence[Finding] = (),
     title: str | None = None,
     narrative: str | None = None,
+    load_states: Mapping | None = None,
 ) -> Path:
     """High-level wrapper: read PNGs from charts_dir, write a self-contained HTML report.
 
@@ -272,7 +324,7 @@ def write_html_report(
         render_report_html(
             title=title, config=config, summary_stats=summary_stats,
             events=events, snapshots=snapshots, charts=charts,
-            findings=findings, narrative=narrative,
+            findings=findings, narrative=narrative, load_states=load_states,
         ),
         encoding="utf-8",
     )

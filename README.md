@@ -15,6 +15,7 @@ This project gives you:
 - **A Python CLI** for scripting, batch jobs, and publication-quality gnuplot output. `pip install -e .` and you're going.
 - **Auto event detection** — outages, voltage dips, swells, high-current peaks, frequency excursions, NEMA imbalance spikes, sudden load steps.
 - **CT reversal correction** — `--reverse-cts` flag handles iFlex probes installed backwards (extremely common mistake). See [`docs/CT_REVERSAL.md`](docs/CT_REVERSAL.md).
+- **Active/standby load-state split** — for bimodal loads (e.g. a rectifier that toggles between a heavy active draw and a light standby), classify each record by current, report the two states separately, headline the active-state power factor, and correct the session energy three ways. See [`docs/LOAD_STATES.md`](docs/LOAD_STATES.md).
 
 ## Web app — no install
 
@@ -100,7 +101,9 @@ fluke-analyze path/to/ES.NNN -o output/ \
 | `--tod-bin MINS` | `1` | Time-of-day bin width in minutes. |
 | `--demand-window SECS` | `900` | Rolling peak-demand window. Reports peak demand + the window it occurred in (`demand.json` + XLSX). See [`docs/DEMAND.md`](docs/DEMAND.md). |
 | `--tz ZONE` | UTC | Render report timestamps in local + UTC for an IANA zone (e.g. `America/Chicago`). Default UTC only. |
-| `--auto-reverse-cts` | off | Auto-detect a reversed-CT install (sustained negative real power) and apply `--reverse-cts` automatically, with a loud notice. See `docs/CT_REVERSAL.md`. |
+| `--auto-reverse-cts` | off | Auto-detect a reversed-CT install and apply `--reverse-cts` automatically, with a loud notice. Decides on the dominant **high-current (active)** state — robust for bimodal loads. See `docs/CT_REVERSAL.md`. |
+| `--standby-threshold-a A` | `50` | Per-phase mean current (A) at/above which a record is **active** load (else standby). Drives the active/standby split (`load_states.csv`/`.json`), the energy correction (three figures), and the magnitude-weighted reverse-CTs decision. See [`docs/LOAD_STATES.md`](docs/LOAD_STATES.md). |
+| `--load-states` | auto | Force the active/standby load-state report (emitted by default; flag is an explicit opt-in). |
 | `--rules-file FILE` | off | JSON/TOML EventRules overrides keyed by asset name. See [`docs/RULES_FILE.md`](docs/RULES_FILE.md). |
 | `--no-stats` | | Skip whole-session statistics (`stats.json`/`stats.csv` + XLSX sheet). |
 | `--format` | `png` | `png` or `svg` |

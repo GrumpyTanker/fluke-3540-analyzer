@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-06-03
+
+Active/standby load-state split for bimodal loads — classify each record by
+current, report the two states separately, correct the session energy three
+ways, headline the active-state power factor, and harden the auto reverse-CTs
+heuristic to decide on the dominant high-current state. Parity-tested Python↔JS.
+Built from the real P115RE coating-rectifier session.
+
+### Added — load-state split (`load_states`)
+- **Current-gated classifier.** Each record is **active** when its mean
+  per-phase average current `(I_a_avg+I_b_avg+I_c_avg)/3` is **≥ the threshold**
+  (default **50 A**), else **standby**. Current — not power — because the power
+  *sign* at low current is exactly the thing in question. Configurable with
+  **`--standby-threshold-a N`**.
+- **`load_states.csv` + `load_states.json`** — one row per state (active,
+  standby): records, hours, duty %, kWh, P avg/min/max (kW), I avg (A), S avg
+  (kVA), PF avg, V_LN avg, V_THD p95. JSON also carries the threshold, the three
+  energy figures, and the standby-sign caveat. Emitted automatically (cheap);
+  `--load-states` is an explicit opt-in. A compact table is embedded in
+  `summary.txt` and the HTML report.
+- **Three explicit energy figures** (never silently changing the historic
+  number): `energy_as_measured_kWh` (signed sum — current behavior),
+  `energy_active_kWh` (active records only), and
+  `energy_net_clip_standby_kWh` (standby real power clipped to ≥0). The standby
+  real-power sign is unreliable at low current, so the active/clip figures are
+  the defensible consumption.
+- **Headline PF is the active-state PF.** The narrative, summary, and HTML
+  report now headline the active-state power factor (the blended whole-session
+  PF is meaningless for a bimodal load); the raw whole-session PF is kept but
+  de-emphasized.
+
+### Changed — magnitude-weighted reverse-CTs auto-detect
+- `detect_ct_reversal` / `--auto-reverse-cts` now decide on the **dominant
+  high-current (active) state** — *is real power negative when current is
+  high?* — instead of the fragile whole-session negative-P count, which a
+  bimodal load defeats. The whole-session count fields are still reported for
+  context (`basis: "active"` vs `"whole_session"`, with `active_records`,
+  `active_frac_negative`, `active_mean_p_w`); the operator notice keys off the
+  active state. **Manual `--reverse-cts` behavior is unchanged** — only the AUTO
+  heuristic + its printed notice were improved.
+
+### Changed — shift integration
+- `shift_comparison.csv/json` rows gain **`active_records`**,
+  **`active_duty_pct`**, **`active_kWh`**, and **`active_PF_avg`** so each shift
+  shows its active load too. `summary.txt`'s shift table shows the new columns.
+
+### Parity / tests / docs
+- JS port in `web/analysis.js` (`classifyLoadStates`, `loadStateRows`,
+  `sessionEnergy`, `activeStatePf`; active-state `detectCtReversal`; active
+  columns on `shiftComparisonRows`) with a Python↔JS parity test
+  (`load_states_parity.test.js`) against a shared bimodal golden fixture.
+- New Python tests: classifier (threshold, balanced bimodal fixture), the three
+  energy figures, the magnitude-weighted reverse-CTs decision (active-positive
+  and active-negative cases + fallback), shift active columns, narrative
+  active-PF/energy, and CLI `load_states` outputs.
+- `docs/LOAD_STATES.md` (concept, the energy caveat, the standby-sign
+  explanation); README options; version bump to 0.8.0.
+
 ## [0.7.0] — 2026-06-03
 
 Generalized, named, configurable shift/period splitting — so usage can be

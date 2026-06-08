@@ -4,4 +4,4 @@ Fluke 3540 FC three-phase power-quality logger sessions.
 The canonical field map and binary layout live in spec/field_map.json at
 the repo root and are shared with the JavaScript port. See README.md.
 """
-__version__ = "0.7.0"
+__version__ = "0.8.0"

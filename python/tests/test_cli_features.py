@@ -219,3 +219,99 @@ def test_split_by_union_of_events_equals_whole(tmp_path: Path):
         b_end = start + dt.timedelta(seconds=period.seconds)
         union += [e for e in whole if start <= e.t_start < b_end]
     assert {(e.kind, e.t_start) for e in union} == {(e.kind, e.t_start) for e in whole}
+
+
+# --- Active/standby load-state split (CLI) -----------------------------------
+
+def _bimodal_trend(path: Path, active_n: int, standby_n: int,
+                   base: dt.datetime) -> None:
+    """Write a trend.bin: active_n high-current/+P records then standby_n
+    low-current/-P records (the P115RE-like bimodal shape)."""
+    import struct
+    from conftest import FIELD_INDEX, dt_to_filetime
+    from fluke_3540.parser import (DATA_FLOATS, HEADER_BYTES, RECORD_MAGIC)
+
+    def floats_for(active: bool) -> list[float]:
+        f = [0.0] * DATA_FLOATS
+        for ph in ("a", "b", "c"):
+            for st in ("min", "max", "avg"):
+                f[FIELD_INDEX[f"V_LN_{ph}_{st}_V"]] = 277.0
+        i = 239.0 if active else 16.0
+        for ph in ("a", "b", "c"):
+            f[FIELD_INDEX[f"I_{ph}_avg_A"]] = i
+        f[FIELD_INDEX["freq_avg_Hz"]] = 60.0
+        f[FIELD_INDEX["P_total_avg_W"]] = 97_000.0 if active else -7_600.0
+        f[FIELD_INDEX["S_total_avg_VA"]] = 206_000.0 if active else 11_800.0
+        f[FIELD_INDEX["PF_total_avg"]] = 0.47 if active else -0.64
+        return f
+
+    with path.open("wb") as fh:
+        for n in range(active_n + standby_n):
+            start_ft = dt_to_filetime(base + dt.timedelta(seconds=n))
+            end_ft = dt_to_filetime(base + dt.timedelta(seconds=n + 1))
+            header = (
+                RECORD_MAGIC
+                + struct.pack("<II", start_ft >> 32 & 0xFFFFFFFF, start_ft & 0xFFFFFFFF)
+                + struct.pack("<II", end_ft >> 32 & 0xFFFFFFFF, end_ft & 0xFFFFFFFF)
+                + struct.pack("<I", 0)
+            )
+            assert len(header) == HEADER_BYTES
+            fh.write(header + struct.pack(f"<{DATA_FLOATS}f",
+                                          *floats_for(n < active_n)))
+
+
+def test_load_states_files_written(tmp_path: Path):
+    base = dt.datetime(2024, 1, 13, 22, 0, 0, tzinfo=dt.timezone.utc)
+    d = tmp_path / "ES.LS"; d.mkdir()
+    _bimodal_trend(d / "trend.bin", active_n=50, standby_n=50, base=base)
+    out = tmp_path / "out"
+    rc = main([str(d), "-o", str(out), "--parse-only", "--no-stats"])
+    assert rc == 0
+    assert (out / "load_states.csv").is_file()
+    assert (out / "load_states.json").is_file()
+    payload = json.loads((out / "load_states.json").read_text())
+    by = {r["state"]: r for r in payload["states"]}
+    assert by["active"]["records"] == 50
+    assert by["standby"]["records"] == 50
+    assert by["active"]["I_avg_A"] == pytest.approx(239.0, abs=0.5)
+    assert by["standby"]["I_avg_A"] == pytest.approx(16.0, abs=0.5)
+    assert by["active"]["P_avg_kW"] == pytest.approx(97.0, abs=0.1)
+    assert by["active"]["PF_avg"] == pytest.approx(0.47, abs=0.01)
+    e = payload["energy"]
+    # as-measured (signed) < active-only and < clip
+    assert e["energy_as_measured_kWh"] < e["energy_active_kWh"]
+    assert e["energy_as_measured_kWh"] < e["energy_net_clip_standby_kWh"]
+    # summary.txt carries the load-state table.
+    summary = (out / "summary.txt").read_text()
+    assert "Load states" in summary
+    assert "active" in summary and "standby" in summary
+
+
+def test_load_states_threshold_flag(tmp_path: Path):
+    # With a 10 A threshold the 16 A standby becomes active -> all 100 active.
+    base = dt.datetime(2024, 1, 13, 22, 0, 0, tzinfo=dt.timezone.utc)
+    d = tmp_path / "ES.LS2"; d.mkdir()
+    _bimodal_trend(d / "trend.bin", active_n=50, standby_n=50, base=base)
+    out = tmp_path / "out"
+    rc = main([str(d), "-o", str(out), "--parse-only", "--no-stats",
+               "--standby-threshold-a", "10"])
+    assert rc == 0
+    payload = json.loads((out / "load_states.json").read_text())
+    assert payload["standby_threshold_a"] == 10.0
+    by = {r["state"]: r for r in payload["states"]}
+    assert by["active"]["records"] == 100
+    assert by["standby"]["records"] == 0
+
+
+def test_shift_comparison_has_active_columns_cli(tmp_path: Path):
+    base = dt.datetime(2024, 1, 13, 22, 0, 0, tzinfo=dt.timezone.utc)
+    d = tmp_path / "ES.LS3"; d.mkdir()
+    _bimodal_trend(d / "trend.bin", active_n=120, standby_n=120, base=base)
+    out = tmp_path / "out"
+    rc = main([str(d), "-o", str(out), "--parse-only", "--split-by", "shifts",
+               "--no-xlsx"])
+    assert rc == 0
+    rows = list(csv.DictReader((out / "shift_comparison.csv").open()))
+    header = rows[0].keys()
+    for col in ("active_records", "active_duty_pct", "active_kWh", "active_PF_avg"):
+        assert col in header, f"missing shift column {col}"
