@@ -163,8 +163,23 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--split-by", dest="split_by", type=str, default=None,
                     metavar="PERIOD",
                     help="Partition the session into time buckets, emitting a full "
-                         "per-bucket report plus a roll-up. PERIOD: hour|day|week or "
-                         "a duration like 30m, 6h, 2d.")
+                         "per-bucket report plus a roll-up. PERIOD: hour|day|week, "
+                         "a duration like 30m, 6h, 2d, OR 'shifts' for named "
+                         "shift windows (see --shifts / --shifts-file).")
+
+    # Named, configurable shift windows (--split-by shifts)
+    ap.add_argument("--shifts", dest="shifts", type=str, default=None,
+                    metavar="SPEC",
+                    help="Shift windows as 'name=HH:MM-HH:MM,...' (comma-separated). "
+                         "A window where end<=start wraps past midnight "
+                         "(e.g. night=18:00-06:00). Interpreted in --tz (UTC if "
+                         "unset). Default day=06:00-18:00,night=18:00-06:00. "
+                         "Requires --split-by shifts.")
+    ap.add_argument("--shifts-file", dest="shifts_file", type=Path, default=None,
+                    metavar="FILE",
+                    help="JSON file of shift windows "
+                         "({\"shifts\":[{\"name\",\"start\",\"end\"}]}); an "
+                         "alternative to --shifts. See docs/SHIFTS.md.")
 
     # Event markers / correlation
     ap.add_argument("--mark", action="append", default=None, metavar="ISO=LABEL",
@@ -592,6 +607,113 @@ def _run_split_by(args: argparse.Namespace, outdir: Path, store: ColumnStore,
           f"per-bucket reports under {outdir}/<label>/")
 
 
+def _resolve_shift_set(args: argparse.Namespace):
+    """Build the ShiftSet from --shifts / --shifts-file, or the default."""
+    from .analysis import ShiftSet
+    if getattr(args, "shifts_file", None):
+        from .shifts_file import load_shifts
+        return load_shifts(args.shifts_file), f"file:{args.shifts_file}"
+    if getattr(args, "shifts", None):
+        return ShiftSet.parse(args.shifts), args.shifts
+    return ShiftSet.default(), "default(day=06:00-18:00,night=18:00-06:00)"
+
+
+def _run_shifts(args: argparse.Namespace, outdir: Path, store: ColumnStore,
+                events: Sequence[Event], config: dict,
+                nominal_ln_v: float) -> None:
+    """Generalized named-shift splitting (--split-by shifts).
+
+    Emits (1) the headline per-shift-name aggregate comparison
+    (shift_comparison.csv + .json) and (2) per-occurrence buckets reusing the
+    standard per-bucket report machinery. Windows are evaluated in --tz.
+    """
+    from .analysis import (event_itic, shift_comparison_rows,
+                           shift_occurrences, slice_store)
+    from .tzutil import tz_label
+
+    tz = getattr(args, "_tz", None)
+    tz_name = getattr(args, "tz", None)
+    ss, spec_label = _resolve_shift_set(args)
+    demand_min = max(1, getattr(args, "demand_window", 900) // 60)
+
+    print(f"[shifts] --split-by shifts ({spec_label}); windows in "
+          f"{tz_label(tz, tz_name)}")
+    for issue in ss.coverage_issues():
+        print(f"[shifts]   WARNING: {issue}", file=sys.stderr)
+
+    # (1) Headline aggregate comparison ------------------------------------
+    rows = shift_comparison_rows(store, ss, events, tz=tz,
+                                 nominal_ln_v=nominal_ln_v,
+                                 demand_window=demand_min)
+    cols = ["shift", "window", "records", "hours", "kWh", "P_total_avg_W",
+            "P_total_min_W", "P_total_max_W", "peak_demand_kW",
+            "peak_demand_window_secs", "PF_avg", "V_LN_avg_V", "V_LN_p5_V",
+            "V_LN_p95_V", "V_THD_p95_pct", "n_outages", "n_dips", "n_swells",
+            "outage_minutes"]
+    with (outdir / "shift_comparison.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(cols)
+        for r in rows:
+            w.writerow([_fmt_shift_cell(c, r[c]) for c in cols])
+    payload = {
+        "tz": tz_label(tz, tz_name),
+        "spec": spec_label,
+        "demand_window_secs": demand_min * 60,
+        "coverage_issues": ss.coverage_issues(),
+        "shifts": rows,
+    }
+    (outdir / "shift_comparison.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8")
+    for r in rows:
+        print(f"[shifts]   {r['shift']:10s} {r['window']:>13s}  "
+              f"{r['records']:>7d} rec  {r['hours']:6.2f} h  "
+              f"{r['kWh']:9.2f} kWh  Pavg={r['P_total_avg_W']/1000:7.2f} kW  "
+              f"peak={r['peak_demand_kW']:7.2f} kW")
+
+    # (2) Per-occurrence buckets (contiguous) ------------------------------
+    occurrences = shift_occurrences(store, ss, tz=tz)
+    for (label, name, lo, hi) in occurrences:
+        sub = slice_store(store, lo, hi)
+        safe = label.replace(" ", "_").replace(":", "")
+        bdir = outdir / "shifts" / safe
+        bdir.mkdir(parents=True, exist_ok=True)
+        b_start = store.start(lo)
+        b_end = store.end(hi - 1)
+        bucket_events = [e for e in events if b_start <= e.t_start < b_end]
+        _write_bucket_csv(bdir / "session.csv", sub)
+        ev_payload = []
+        for e in bucket_events:
+            d = _event_to_json(e)
+            info = event_itic(e, nominal_ln_v)
+            if info:
+                d["itic"] = info
+            ev_payload.append(d)
+        (bdir / "events.json").write_text(json.dumps(ev_payload, indent=2),
+                                          encoding="utf-8")
+        b_findings = analyze_insights(sub, bucket_events, [], config)
+        b_snaps = pick_snapshots(sub, bucket_events, n=1)
+        _write_summary_txt(bdir, bucket_events, b_snaps, b_findings, config,
+                           tz=tz, tz_name=tz_name, store=sub)
+    print(f"[shifts] wrote shift_comparison.csv/json + "
+          f"{len(occurrences)} per-occurrence report(s) under {outdir}/shifts/")
+    return rows
+
+
+def _fmt_shift_cell(col: str, val):
+    """Format one comparison-CSV cell (round floats; pass ints/strings)."""
+    if col in ("shift", "window") or isinstance(val, int):
+        return val
+    if col == "kWh":
+        return f"{val:.2f}"
+    if col in ("hours", "outage_minutes"):
+        return f"{val:.2f}"
+    if col == "PF_avg":
+        return f"{val:.3f}"
+    if col == "peak_demand_kW":
+        return f"{val:.2f}"
+    return f"{val:.1f}"
+
+
 def _write_bucket_csv(path: Path, sub: ColumnStore) -> None:
     """Write a CSV for a bucket slice from the store's retained columns."""
     cols = list(sub.columns)
@@ -660,13 +782,18 @@ def _run_extra_analyses(args: argparse.Namespace, outdir: Path,
     if getattr(args, "tod_profile", None):
         tod_rows = _write_tod(outdir, store, args)
 
+    shift_rows = None
     if getattr(args, "split_by", None):
-        _run_split_by(args, outdir, store, events, config, nominal_ln_v)
+        if str(args.split_by).strip().lower() == "shifts":
+            shift_rows = _run_shifts(args, outdir, store, events, config,
+                                     nominal_ln_v)
+        else:
+            _run_split_by(args, outdir, store, events, config, nominal_ln_v)
 
     # Auto-narrative / executive summary (Feature E) — needs stats + ct.
     narrative = _write_narrative(outdir, store, events, findings, stats, ct, config)
 
-    return stats, tod_rows, narrative, demand
+    return stats, tod_rows, narrative, demand, shift_rows
 
 
 def _write_narrative(outdir: Path, store: ColumnStore, events, findings,
@@ -692,7 +819,8 @@ def _write_summary_txt(outdir: Path, events: Sequence[Event],
                        config: dict,
                        narrative: str | None = None,
                        tz=None, tz_name: str | None = None,
-                       store: "ColumnStore | None" = None) -> None:
+                       store: "ColumnStore | None" = None,
+                       shift_rows: "list[dict] | None" = None) -> None:
     lines: list[str] = ["Fluke 3540 FC Session Summary", "=" * 32, ""]
     if narrative:
         lines.append("Executive Summary")
@@ -719,6 +847,17 @@ def _write_summary_txt(outdir: Path, events: Sequence[Event],
         lines.append("-" * 8)
         for f in findings:
             lines.append(f"  [{f.severity:5s}] {f.kind:25s}  {f.headline}")
+        lines.append("")
+    if shift_rows:
+        lines.append("Shift comparison")
+        lines.append("-" * 16)
+        lines.append(f"  {'shift':<10} {'window':>13}  {'records':>8}  "
+                     f"{'kWh':>9}  {'Pavg_kW':>8}  {'peak_kW':>8}  {'PF':>5}")
+        for r in shift_rows:
+            lines.append(
+                f"  {r['shift']:<10} {r['window']:>13}  {r['records']:>8d}  "
+                f"{r['kWh']:>9.2f}  {r['P_total_avg_W']/1000:>8.2f}  "
+                f"{r['peak_demand_kW']:>8.2f}  {r['PF_avg']:>5.3f}")
         lines.append("")
     lines.append(f"Events detected: {len(events)}")
     for ev in events:
@@ -978,12 +1117,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # Post-detection analysis features (markers, stats, tod, split) run on
         # the in-memory store + on-disk CSVs.
-        stats, tod_rows, narrative, demand = _run_extra_analyses(
+        stats, tod_rows, narrative, demand, shift_rows = _run_extra_analyses(
             args, outdir, store, events, findings, config, full_csv, min_csv)
         # Re-write summary.txt with the executive narrative + tz-aware time range.
         _write_summary_txt(outdir, events, snaps, findings, config,
                            narrative=narrative, tz=getattr(args, "_tz", None),
-                           tz_name=getattr(args, "tz", None), store=store)
+                           tz_name=getattr(args, "tz", None), store=store,
+                           shift_rows=shift_rows)
 
         if getattr(args, "json_mode", False):
             _emit_json(events, snaps, findings, config)

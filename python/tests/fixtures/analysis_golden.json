@@ -429,6 +429,163 @@
       }
     ]
   },
+  "shifts": {
+    "base_epoch_ms": 1779840000000,
+    "n_records": 4320,
+    "comparison_utc": [
+      {
+        "shift": "day",
+        "window": "06:00-18:00",
+        "records": 2160,
+        "hours": 0.6,
+        "kWh": 22.46690277777777,
+        "P_total_avg_W": 37444.83796296295,
+        "P_total_min_W": 35000.0,
+        "P_total_max_W": 39800.0,
+        "peak_demand_kW": 37.52005555555556,
+        "peak_demand_window_secs": 900,
+        "PF_avg": 0.9399999976158142,
+        "V_LN_avg_V": 277.00500000847757,
+        "V_LN_p5_V": 275.05,
+        "V_LN_p95_V": 279.05,
+        "V_THD_p95_pct": 4.5062500000000005,
+        "n_outages": 0,
+        "n_dips": 0,
+        "n_swells": 0,
+        "outage_minutes": 0.0
+      },
+      {
+        "shift": "night",
+        "window": "18:00-06:00",
+        "records": 2160,
+        "hours": 0.6,
+        "kWh": 19.396847222222263,
+        "P_total_avg_W": 32328.078703703777,
+        "P_total_min_W": 30000.0,
+        "P_total_max_W": 34800.0,
+        "peak_demand_kW": 32.431444444444445,
+        "peak_demand_window_secs": 900,
+        "PF_avg": 0.9399999976158142,
+        "V_LN_avg_V": 276.9927777608227,
+        "V_LN_p5_V": 275.05,
+        "V_LN_p95_V": 279.05,
+        "V_THD_p95_pct": 4.5062500000000005,
+        "n_outages": 0,
+        "n_dips": 0,
+        "n_swells": 0,
+        "outage_minutes": 0.0
+      }
+    ],
+    "occurrences_utc": [
+      {
+        "label": "night 2026-05-27",
+        "name": "night",
+        "lo": 0,
+        "hi": 360
+      },
+      {
+        "label": "day 2026-05-27",
+        "name": "day",
+        "lo": 360,
+        "hi": 1080
+      },
+      {
+        "label": "night 2026-05-27",
+        "name": "night",
+        "lo": 1080,
+        "hi": 1800
+      },
+      {
+        "label": "day 2026-05-28",
+        "name": "day",
+        "lo": 1800,
+        "hi": 2520
+      },
+      {
+        "label": "night 2026-05-28",
+        "name": "night",
+        "lo": 2520,
+        "hi": 3240
+      },
+      {
+        "label": "day 2026-05-29",
+        "name": "day",
+        "lo": 3240,
+        "hi": 3960
+      },
+      {
+        "label": "night 2026-05-29",
+        "name": "night",
+        "lo": 3960,
+        "hi": 4320
+      }
+    ],
+    "comparison_abc_chicago": [
+      {
+        "shift": "A",
+        "window": "06:00-14:00",
+        "records": 1440,
+        "hours": 0.4,
+        "kWh": 14.70750000000002,
+        "P_total_avg_W": 36768.750000000044,
+        "P_total_min_W": 30000.0,
+        "P_total_max_W": 39800.0,
+        "peak_demand_kW": 37.11338888888889,
+        "peak_demand_window_secs": 900,
+        "PF_avg": 0.939999997615815,
+        "V_LN_avg_V": 276.99166666666616,
+        "V_LN_p5_V": 275.05,
+        "V_LN_p95_V": 279.05,
+        "V_THD_p95_pct": 4.5062500000000005,
+        "n_outages": 0,
+        "n_dips": 0,
+        "n_swells": 0,
+        "outage_minutes": 0.0
+      },
+      {
+        "shift": "B",
+        "window": "14:00-22:00",
+        "records": 1440,
+        "hours": 0.4,
+        "kWh": 12.94979166666667,
+        "P_total_avg_W": 32374.479166666675,
+        "P_total_min_W": 30000.0,
+        "P_total_max_W": 34800.0,
+        "peak_demand_kW": 32.44583333333333,
+        "peak_demand_window_secs": 900,
+        "PF_avg": 0.939999997615815,
+        "V_LN_avg_V": 276.9991666369966,
+        "V_LN_p5_V": 275.05,
+        "V_LN_p95_V": 279.05,
+        "V_THD_p95_pct": 4.5062500000000005,
+        "n_outages": 0,
+        "n_dips": 0,
+        "n_swells": 0,
+        "outage_minutes": 0.0
+      },
+      {
+        "shift": "C",
+        "window": "22:00-06:00",
+        "records": 1440,
+        "hours": 0.4,
+        "kWh": 14.206458333333323,
+        "P_total_avg_W": 35516.14583333331,
+        "P_total_min_W": 30000.0,
+        "P_total_max_W": 39800.0,
+        "peak_demand_kW": 35.76972222222222,
+        "peak_demand_window_secs": 900,
+        "PF_avg": 0.939999997615815,
+        "V_LN_avg_V": 277.0058333502876,
+        "V_LN_p5_V": 275.05,
+        "V_LN_p95_V": 279.05,
+        "V_THD_p95_pct": 4.5062500000000005,
+        "n_outages": 0,
+        "n_dips": 0,
+        "n_swells": 0,
+        "outage_minutes": 0.0
+      }
+    ]
+  },
   "timezone": {
     "epoch_ms": 1705158000000,
     "utc": "2024-01-13T15:00:00+00:00",

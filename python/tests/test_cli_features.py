@@ -109,6 +109,90 @@ def test_split_by_day(tmp_path: Path):
     assert rows[0]["bucket"] == "2024-01-13"
 
 
+def test_split_by_shifts_default(tmp_path: Path):
+    # base 22:00 UTC → all records in the default night shift.
+    base = dt.datetime(2024, 1, 13, 22, 0, 0, tzinfo=dt.timezone.utc)
+    d = _session(tmp_path, 300, base=base)
+    out = tmp_path / "out"
+    rc = main([str(d), "-o", str(out), "--parse-only", "--split-by", "shifts",
+               "--no-xlsx"])
+    assert rc == 0
+    assert (out / "shift_comparison.csv").is_file()
+    assert (out / "shift_comparison.json").is_file()
+    payload = json.loads((out / "shift_comparison.json").read_text())
+    names = {r["shift"] for r in payload["shifts"]}
+    assert {"day", "night"} <= names
+    by = {r["shift"]: r for r in payload["shifts"]}
+    assert by["night"]["records"] == 300
+    assert by["day"]["records"] == 0
+    assert payload["tz"] == "UTC"
+    # per-occurrence buckets exist
+    assert (out / "shifts").is_dir()
+
+
+def test_split_by_shifts_crosses_boundary(tmp_path: Path):
+    # base 17:55:00 UTC, 700 s (~11.6 min) → crosses 18:00 day→night.
+    base = dt.datetime(2024, 1, 13, 17, 55, 0, tzinfo=dt.timezone.utc)
+    d = _session(tmp_path, 700, base=base)
+    out = tmp_path / "out"
+    rc = main([str(d), "-o", str(out), "--parse-only", "--split-by", "shifts",
+               "--shifts", "day=06:00-18:00,night=18:00-06:00", "--no-xlsx"])
+    assert rc == 0
+    rows = list(csv.DictReader((out / "shift_comparison.csv").open()))
+    by = {r["shift"]: r for r in rows}
+    # 17:55:00..17:59:59 = 300 records day; 18:00:00.. = 400 records night.
+    assert int(by["day"]["records"]) == 300
+    assert int(by["night"]["records"]) == 400
+    assert by["day"]["window"] == "06:00-18:00"
+
+
+def test_split_by_shifts_tz_central(tmp_path: Path):
+    # base 10:25 UTC = 05:25 America/Chicago (winter, UTC-6) → night (wrap leg)
+    # in Central but day in UTC. With --tz the records must land in night.
+    base = dt.datetime(2024, 1, 13, 10, 25, 0, tzinfo=dt.timezone.utc)
+    d = _session(tmp_path, 120, base=base)
+    out = tmp_path / "out"
+    rc = main([str(d), "-o", str(out), "--parse-only", "--split-by", "shifts",
+               "--tz", "America/Chicago", "--no-xlsx"])
+    assert rc == 0
+    payload = json.loads((out / "shift_comparison.json").read_text())
+    by = {r["shift"]: r for r in payload["shifts"]}
+    assert payload["tz"] == "America/Chicago"
+    assert by["night"]["records"] == 120   # Central 05:25 → night wrap leg
+    assert by["day"]["records"] == 0
+
+
+def test_split_by_shifts_file(tmp_path: Path):
+    base = dt.datetime(2024, 1, 13, 22, 0, 0, tzinfo=dt.timezone.utc)
+    d = _session(tmp_path, 100, base=base)
+    out = tmp_path / "out"
+    sf = tmp_path / "shifts.json"
+    sf.write_text(json.dumps({"shifts": [
+        {"name": "A", "start": "06:00", "end": "14:00"},
+        {"name": "B", "start": "14:00", "end": "22:00"},
+        {"name": "C", "start": "22:00", "end": "06:00"},
+    ]}), encoding="utf-8")
+    rc = main([str(d), "-o", str(out), "--parse-only", "--split-by", "shifts",
+               "--shifts-file", str(sf), "--no-xlsx"])
+    assert rc == 0
+    payload = json.loads((out / "shift_comparison.json").read_text())
+    by = {r["shift"]: r for r in payload["shifts"]}
+    assert set(by) >= {"A", "B", "C"}
+    assert by["C"]["records"] == 100   # 22:00 UTC → shift C
+
+
+def test_split_by_shifts_summary_table(tmp_path: Path):
+    base = dt.datetime(2024, 1, 13, 22, 0, 0, tzinfo=dt.timezone.utc)
+    d = _session(tmp_path, 120, base=base)
+    out = tmp_path / "out"
+    rc = main([str(d), "-o", str(out), "--parse-only", "--split-by", "shifts",
+               "--no-xlsx"])
+    assert rc == 0
+    summary = (out / "summary.txt").read_text(encoding="utf-8")
+    assert "Shift comparison" in summary
+    assert "night" in summary
+
+
 def test_split_by_union_of_events_equals_whole(tmp_path: Path):
     # Whole-session events should equal the union of per-bucket events.
     from conftest import make_records, plant_window

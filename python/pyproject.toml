@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fluke-3540-analyzer"
-version = "0.6.0"
+version = "0.7.0"
 description = "Parser, event detector, and chart generator for Fluke 3540 FC three-phase power-quality sessions. See https://github.com/GrumpyTanker/fluke-3540-analyzer."
 requires-python = ">=3.10"
 license = {text = "MIT"}
